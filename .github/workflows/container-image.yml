@@ -151,6 +151,7 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           PUBLISHED_IMAGE: ${{ steps.exact.outputs.image_ref }}
+          SOURCE_REPOSITORY_URL: https://github.com/${{ github.repository }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -178,12 +179,27 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}' "$PUBLISHED_IMAGE")" = '10001:10001'
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$PUBLISHED_IMAGE")" = '/usr/local/bin/push-notification-server'
 
-          registry_config="${RUNNER_TEMP}/published-image-config.json"
-          docker buildx imagetools inspect "$PUBLISHED_IMAGE" \
-            --format '{{json .Image}}' > "$registry_config"
-          jq -e --arg source "$SOURCE_SHA" \
-            '.config.Labels["org.opencontainers.image.revision"] == $source' \
-            "$registry_config"
+          index_manifest="${RUNNER_TEMP}/published-attested-index.json"
+          docker buildx imagetools inspect "$PUBLISHED_IMAGE" --raw > "$index_manifest"
+          jq -e --arg digest "$platform_digest" '
+            any(
+              .manifests[];
+              .digest == $digest and
+              .platform.os == "linux" and
+              .platform.architecture == "amd64"
+            )
+          ' "$index_manifest"
+
+          platform_image="ghcr.io/fanwaave/push-notification-server@${platform_digest}"
+          platform_config="${RUNNER_TEMP}/published-platform-image-config.json"
+          docker buildx imagetools inspect "$platform_image" \
+            --format '{{json .Image}}' > "$platform_config"
+          jq -e \
+            --arg repository "$SOURCE_REPOSITORY_URL" \
+            --arg source "$SOURCE_SHA" '
+              .config.Labels["org.opencontainers.image.revision"] == $source and
+              .config.Labels["org.opencontainers.image.source"] == $repository
+            ' "$platform_config"
 
       - name: Scan the exact published digest
         if: github.event_name != 'pull_request'
@@ -217,7 +233,7 @@ jobs:
             --arg run_id "$GITHUB_RUN_ID" \
             --arg source_sha "$SOURCE_SHA" \
             '{
-              schema_version: 2,
+              schema_version: 3,
               repository: $repository,
               source_sha: $source_sha,
               workflow_run_id: ($run_id | tonumber),
@@ -228,24 +244,26 @@ jobs:
               artifact_kind: "attested_oci_index",
               selected_platform: "linux/amd64",
               selected_platform_digest: $platform_digest,
+              attested_index_contains_selected_platform: true,
+              selected_platform_source_identity_verified: true,
               non_root_runtime_verified: true,
               health_endpoint_verified: true,
               attested_index_pull_succeeded: true,
-              registry_source_identity_verified: true,
               exact_digest_vulnerability_scan: "passed"
             }' >"${evidence_dir}/push-notification-server.json"
           jq -e '
-            .schema_version == 2 and
+            .schema_version == 3 and
             (.source_sha | test("^[0-9a-f]{40}$")) and
             (.digest | test("^sha256:[0-9a-f]{64}$")) and
             .image_ref == (.image + "@" + .digest) and
             .artifact_kind == "attested_oci_index" and
             .selected_platform == "linux/amd64" and
             (.selected_platform_digest | test("^sha256:[0-9a-f]{64}$")) and
+            .attested_index_contains_selected_platform == true and
+            .selected_platform_source_identity_verified == true and
             .non_root_runtime_verified == true and
             .health_endpoint_verified == true and
             .attested_index_pull_succeeded == true and
-            .registry_source_identity_verified == true and
             .exact_digest_vulnerability_scan == "passed"
           ' "${evidence_dir}/push-notification-server.json"
 
