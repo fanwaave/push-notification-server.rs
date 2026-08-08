@@ -154,9 +154,17 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "$PUBLISHED_IMAGE"
+          docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "$PUBLISHED_IMAGE" | grep --fixed-strings --line-regexp "$PUBLISHED_IMAGE"
           test "$(docker image inspect --format '{{.Config.User}}' "$PUBLISHED_IMAGE")" = '10001:10001'
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$PUBLISHED_IMAGE")" = '/usr/local/bin/push-notification-server'
-          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$PUBLISHED_IMAGE")" = "$SOURCE_SHA"
+
+          registry_config="${RUNNER_TEMP}/published-image-config.json"
+          docker buildx imagetools inspect "$PUBLISHED_IMAGE" \
+            --format '{{json .Image}}' > "$registry_config"
+          jq -e --arg source "$SOURCE_SHA" \
+            '.config.Labels["org.opencontainers.image.revision"] == $source' \
+            "$registry_config"
 
       - name: Scan the exact published digest
         if: github.event_name != 'pull_request'
