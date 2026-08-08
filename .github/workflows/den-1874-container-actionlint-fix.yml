@@ -1,0 +1,60 @@
+name: DEN-1874 repair immutable image workflow lint
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/den-1874-container-actionlint-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1874-container-actionlint-fix
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/DEN-1874-immutable-container'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: agent/DEN-1874-immutable-container
+
+      - name: Apply the reviewed actionlint corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/container-image.yml')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              '          cleanup() {\n': '          # shellcheck disable=SC2329\n          cleanup() {\n',
+              '          for attempt in $(seq 1 60); do\n': '          for _ in $(seq 1 60); do\n',
+              "      - name: Record the deployment reference\n        if: github.event_name != 'pull_request'\n        run: |\n": "      - name: Record the deployment reference\n        if: github.event_name != 'pull_request'\n        env:\n          IMAGE_REF: ${{ steps.exact.outputs.image_ref }}\n        run: |\n",
+              "            echo '\\`${{ steps.exact.outputs.image_ref }}\\`'\n": "            printf '`%s`\\n' \"$IMAGE_REF\"\n",
+              "            echo 'Use this exact image reference in GitOps. Do not deploy the mutable `main` or SHA tag.'\n": "            printf '%s\\n' 'Use this exact image reference in GitOps. Do not deploy a mutable tag.'\n",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one workflow match for {old!r}, found {text.count(old)}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit the repair and remove this helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/den-1874-container-actionlint-fix.yml
+          git add .github/workflows/container-image.yml
+          git diff --cached --check
+          git commit -m 'DEN-1874 satisfy immutable image workflow lint'
+          git push origin HEAD:agent/DEN-1874-immutable-container
