@@ -229,7 +229,7 @@ jobs:
           {
             echo '### push-notification-server'
             echo
-            printf '`%s`\n' "$IMAGE_REF"
+            printf '%c%s%c\n' 96 "$IMAGE_REF" 96
             echo
             printf '%s\n' 'Use this exact image reference in GitOps. Do not deploy a mutable tag.'
           } >> "$GITHUB_STEP_SUMMARY"
