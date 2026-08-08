@@ -34,6 +34,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
+      - name: Log in for the same-repository diagnostic fixture
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          scope: fanwaave/push-notification-server@pull
+
+      - name: Prove the registry image-config query against the failed-closed publication
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          DIAGNOSTIC_IMAGE: ghcr.io/fanwaave/push-notification-server@sha256:bb459298b0f76058d067287bcdd75791b60d3244010c508d22367a53d3753771
+          DIAGNOSTIC_SOURCE_SHA: 4544f5891b49a747286aa70849b135c103ce0b2d
+        run: |
+          set -euo pipefail
+          diagnostic_config="${RUNNER_TEMP}/diagnostic-image-config.json"
+          docker buildx imagetools inspect "$DIAGNOSTIC_IMAGE" \
+            --format '{{json .Image}}' > "$diagnostic_config"
+          jq -e --arg source "$DIAGNOSTIC_SOURCE_SHA" \
+            '.config.Labels["org.opencontainers.image.revision"] == $source' \
+            "$diagnostic_config"
+
       - name: Extract immutable image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
@@ -154,9 +177,17 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "$PUBLISHED_IMAGE"
+          docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "$PUBLISHED_IMAGE" | grep --fixed-strings --line-regexp "$PUBLISHED_IMAGE"
           test "$(docker image inspect --format '{{.Config.User}}' "$PUBLISHED_IMAGE")" = '10001:10001'
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$PUBLISHED_IMAGE")" = '/usr/local/bin/push-notification-server'
-          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$PUBLISHED_IMAGE")" = "$SOURCE_SHA"
+
+          registry_config="${RUNNER_TEMP}/published-image-config.json"
+          docker buildx imagetools inspect "$PUBLISHED_IMAGE" \
+            --format '{{json .Image}}' > "$registry_config"
+          jq -e --arg source "$SOURCE_SHA" \
+            '.config.Labels["org.opencontainers.image.revision"] == $source' \
+            "$registry_config"
 
       - name: Scan the exact published digest
         if: github.event_name != 'pull_request'
