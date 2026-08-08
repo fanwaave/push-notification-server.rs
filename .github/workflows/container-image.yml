@@ -1,0 +1,232 @@
+name: Container image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - docs/immutable-container.md
+      - .github/workflows/container-image.yml
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: push-notification-container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Extract immutable image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ghcr.io/fanwaave/push-notification-server
+          flavor: latest=false
+          tags: |
+            type=sha,format=long
+            type=ref,event=tag
+            type=raw,value=main,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=push-notification-server
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build local candidate
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: local/push-notification-server:${{ github.sha }}
+          cache-from: type=gha,scope=push-notification-server
+          cache-to: type=gha,mode=max,scope=push-notification-server
+          provenance: false
+
+      - name: Verify non-root runtime contract and health endpoint
+        env:
+          IMAGE: local/push-notification-server:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE")" = '10001:10001'
+          test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$IMAGE")" = '/usr/local/bin/push-notification-server'
+          test -z "$(docker image inspect --format '{{join .Config.Cmd " "}}' "$IMAGE")"
+
+          container_name="push-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach \
+            --name "$container_name" \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=8m \
+            --publish 127.0.0.1::8121 \
+            --env RUST_LOG=warn \
+            "$IMAGE" >/dev/null
+          cleanup() {
+            docker logs "$container_name" >&2 || true
+            docker stop --time 1 "$container_name" >/dev/null 2>&1 || true
+            docker container rm "$container_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          host_port="$(docker port "$container_name" 8121/tcp | awk -F: 'END { print $NF }')"
+          test -n "$host_port"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              "http://127.0.0.1:${host_port}/healthz" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'container health endpoint did not become ready' >&2
+          exit 1
+
+      - name: Scan local candidate
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: local/push-notification-server:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          scope: fanwaave/push-notification-server@push
+
+      - name: Publish digest-addressable image with SBOM and provenance
+        id: publish
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=push-notification-server
+          cache-to: type=gha,mode=max,scope=push-notification-server
+          sbom: true
+          provenance: mode=max
+
+      - name: Resolve exact published image
+        id: exact
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Buildx returned an invalid manifest digest' >&2
+            exit 1
+          fi
+          echo "image_ref=ghcr.io/fanwaave/push-notification-server@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull and verify the exact published digest
+        if: github.event_name != 'pull_request'
+        env:
+          PUBLISHED_IMAGE: ${{ steps.exact.outputs.image_ref }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker pull "$PUBLISHED_IMAGE"
+          test "$(docker image inspect --format '{{.Config.User}}' "$PUBLISHED_IMAGE")" = '10001:10001'
+          test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$PUBLISHED_IMAGE")" = '/usr/local/bin/push-notification-server'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$PUBLISHED_IMAGE")" = "$SOURCE_SHA"
+
+      - name: Scan the exact published digest
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ steps.exact.outputs.image_ref }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Write machine-readable digest evidence
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE_REF: ${{ steps.exact.outputs.image_ref }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/image-digest-evidence"
+          mkdir -p "$evidence_dir"
+          jq -n \
+            --arg digest "$DIGEST" \
+            --arg image 'ghcr.io/fanwaave/push-notification-server' \
+            --arg image_ref "$IMAGE_REF" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg source_sha "$SOURCE_SHA" \
+            '{
+              schema_version: 1,
+              repository: $repository,
+              source_sha: $source_sha,
+              workflow_run_id: ($run_id | tonumber),
+              workflow_run_attempt: ($run_attempt | tonumber),
+              image: $image,
+              digest: $digest,
+              image_ref: $image_ref,
+              non_root_runtime_verified: true,
+              health_endpoint_verified: true,
+              exact_digest_pulled: true,
+              exact_digest_vulnerability_scan: "passed"
+            }' >"${evidence_dir}/push-notification-server.json"
+          jq -e '
+            .schema_version == 1 and
+            (.source_sha | test("^[0-9a-f]{40}$")) and
+            (.digest | test("^sha256:[0-9a-f]{64}$")) and
+            .image_ref == (.image + "@" + .digest) and
+            .non_root_runtime_verified == true and
+            .health_endpoint_verified == true and
+            .exact_digest_pulled == true and
+            .exact_digest_vulnerability_scan == "passed"
+          ' "${evidence_dir}/push-notification-server.json"
+
+      - name: Upload digest evidence
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: push-notification-image-digest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/image-digest-evidence/push-notification-server.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record the deployment reference
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo '### push-notification-server'
+            echo
+            echo '\`${{ steps.exact.outputs.image_ref }}\`'
+            echo
+            echo 'Use this exact image reference in GitOps. Do not deploy the mutable `main` or SHA tag.'
+          } >> "$GITHUB_STEP_SUMMARY"
