@@ -141,12 +141,13 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo 'Buildx returned an invalid manifest digest' >&2
+            echo 'Buildx returned an invalid attested OCI index digest' >&2
             exit 1
           fi
           echo "image_ref=ghcr.io/fanwaave/push-notification-server@${DIGEST}" >> "$GITHUB_OUTPUT"
 
-      - name: Pull and verify the exact published digest
+      - name: Pull and verify the exact published image
+        id: verify
         if: github.event_name != 'pull_request'
         env:
           PUBLISHED_IMAGE: ${{ steps.exact.outputs.image_ref }}
@@ -154,8 +155,26 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "$PUBLISHED_IMAGE"
-          docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-            "$PUBLISHED_IMAGE" | grep --fixed-strings --line-regexp "$PUBLISHED_IMAGE"
+
+          platform_reference="$(
+            docker image inspect \
+              --format '{{index .RepoDigests 0}}' \
+              "$PUBLISHED_IMAGE"
+          )"
+          case "$platform_reference" in
+            ghcr.io/fanwaave/push-notification-server@sha256:*) ;;
+            *)
+              echo "unexpected selected platform reference: ${platform_reference}" >&2
+              exit 1
+              ;;
+          esac
+          platform_digest="${platform_reference##*@}"
+          if ! [[ "$platform_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Docker selected an invalid platform manifest digest' >&2
+            exit 1
+          fi
+          echo "platform_digest=${platform_digest}" >> "$GITHUB_OUTPUT"
+
           test "$(docker image inspect --format '{{.Config.User}}' "$PUBLISHED_IMAGE")" = '10001:10001'
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$PUBLISHED_IMAGE")" = '/usr/local/bin/push-notification-server'
 
@@ -182,6 +201,7 @@ jobs:
         env:
           DIGEST: ${{ steps.publish.outputs.digest }}
           IMAGE_REF: ${{ steps.exact.outputs.image_ref }}
+          PLATFORM_DIGEST: ${{ steps.verify.outputs.platform_digest }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -191,12 +211,13 @@ jobs:
             --arg digest "$DIGEST" \
             --arg image 'ghcr.io/fanwaave/push-notification-server' \
             --arg image_ref "$IMAGE_REF" \
+            --arg platform_digest "$PLATFORM_DIGEST" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg source_sha "$SOURCE_SHA" \
             '{
-              schema_version: 1,
+              schema_version: 2,
               repository: $repository,
               source_sha: $source_sha,
               workflow_run_id: ($run_id | tonumber),
@@ -204,19 +225,27 @@ jobs:
               image: $image,
               digest: $digest,
               image_ref: $image_ref,
+              artifact_kind: "attested_oci_index",
+              selected_platform: "linux/amd64",
+              selected_platform_digest: $platform_digest,
               non_root_runtime_verified: true,
               health_endpoint_verified: true,
-              exact_digest_pulled: true,
+              attested_index_pull_succeeded: true,
+              registry_source_identity_verified: true,
               exact_digest_vulnerability_scan: "passed"
             }' >"${evidence_dir}/push-notification-server.json"
           jq -e '
-            .schema_version == 1 and
+            .schema_version == 2 and
             (.source_sha | test("^[0-9a-f]{40}$")) and
             (.digest | test("^sha256:[0-9a-f]{64}$")) and
             .image_ref == (.image + "@" + .digest) and
+            .artifact_kind == "attested_oci_index" and
+            .selected_platform == "linux/amd64" and
+            (.selected_platform_digest | test("^sha256:[0-9a-f]{64}$")) and
             .non_root_runtime_verified == true and
             .health_endpoint_verified == true and
-            .exact_digest_pulled == true and
+            .attested_index_pull_succeeded == true and
+            .registry_source_identity_verified == true and
             .exact_digest_vulnerability_scan == "passed"
           ' "${evidence_dir}/push-notification-server.json"
 
@@ -233,11 +262,13 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           IMAGE_REF: ${{ steps.exact.outputs.image_ref }}
+          PLATFORM_DIGEST: ${{ steps.verify.outputs.platform_digest }}
         run: |
           {
             echo '### push-notification-server'
             echo
-            printf '%c%s%c\n' 96 "$IMAGE_REF" 96
+            printf 'GitOps image: %c%s%c\n' 96 "$IMAGE_REF" 96
+            printf 'Selected linux/amd64 manifest: %c%s%c\n' 96 "$PLATFORM_DIGEST" 96
             echo
-            printf '%s\n' 'Use this exact image reference in GitOps. Do not deploy a mutable tag.'
+            printf '%s\n' 'Deploy the attested OCI index digest. Do not deploy a mutable tag.'
           } >> "$GITHUB_STEP_SUMMARY"
