@@ -2,24 +2,32 @@
 
 ## Repository and tracking
 
-- Repository: `github.com/fanwaave/push-notification-server.rs`
-- Legacy transfer source: `github.com/ORESoftware/push-notification-server.rs` (redirect only; do not recreate)
-- Linear project: `github.com/ORESoftware/push-notification-server.rs` (legacy tracker name retained during the repository transfer)
-- Parent implementation issue: `DEN-257`
-- Bootstrap: `DEN-259`
-- Provider extraction: `DEN-261`
-- Cluster submodule/deployment: `DEN-263`
-- Supabase integration: `DEN-264`
-- Reliability/security/observability: `DEN-265`
+- Canonical repository: `github.com/fanwaave/push-notification-server.rs`
+- Historical source copy: `github.com/ORESoftware/push-notification-server.rs`
+- Linear project: `github.com/fanwaave`
+- Repository publication and cutover: `DEN-1874`
+- Reliability, receipts, retry, observability, and recovery: `DEN-1875`
+- Destination cutover issues: `fanwaave/push-notification-server.rs#2`, `#3`, and `#4`
+
+The ORESoftware repository remains an independent historical/source copy. Do not describe it as a redirect, transfer source, or automatic mirror. New product work, releases, packages, and deployment references belong to Fanwaave.
 
 ## Git workflow
 
-- Work from feature branches cut from `main` and use pull requests.
+- Work from focused feature branches cut from current `main` and use pull requests.
 - Avoid git rebase in favor of git merge.
 - Sync with remote before and after material work.
-- Resolve git conflicts semantically: do not merely pick one side. Merge the intended concepts and behavior.
-- After resolving conflicts, grep the entire worktree for conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), review from the top, and repeat as necessary.
-- Never commit secrets, production device tokens, Web Push capability URLs, or provider private keys.
+- Resolve git conflicts semantically: do not merely pick one side. Preserve compatible behavior, contracts, tests, documentation, and security boundaries from both sides.
+- After resolving conflicts, scan the complete worktree for conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) and rerun every affected contract.
+- Never force-push shared branches, rewrite reviewed history, or bypass exact-head checks.
+- Never commit secrets, production device tokens, Web Push capability URLs, provider private keys, recipient addresses, or phone numbers.
+
+## Runtime and release boundary
+
+- The canonical image is `ghcr.io/fanwaave/push-notification-server`.
+- Production and GitOps manifests must use an exact `image@sha256:...` reference from the machine-readable digest evidence artifact produced by `.github/workflows/container-image.yml`.
+- Do not deploy mutable tags such as `main`, `latest`, or `sha-*`.
+- Preserve the non-root runtime, read-only-root-filesystem compatibility, health probe, SBOM, provenance, exact-digest pull verification, and HIGH/CRITICAL vulnerability gate.
+- Source-publication workflows and temporary credential handoff scripts do not belong in this destination repository.
 
 ## Nested instructions
 
