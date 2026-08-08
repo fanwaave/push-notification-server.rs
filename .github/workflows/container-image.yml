@@ -78,6 +78,7 @@ jobs:
             --publish 127.0.0.1::8121 \
             --env RUST_LOG=warn \
             "$IMAGE" >/dev/null
+          # shellcheck disable=SC2329
           cleanup() {
             docker logs "$container_name" >&2 || true
             docker stop --time 1 "$container_name" >/dev/null 2>&1 || true
@@ -87,7 +88,7 @@ jobs:
 
           host_port="$(docker port "$container_name" 8121/tcp | awk -F: 'END { print $NF }')"
           test -n "$host_port"
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --show-error \
               "http://127.0.0.1:${host_port}/healthz" >/dev/null; then
               exit 0
@@ -222,11 +223,13 @@ jobs:
 
       - name: Record the deployment reference
         if: github.event_name != 'pull_request'
+        env:
+          IMAGE_REF: ${{ steps.exact.outputs.image_ref }}
         run: |
           {
             echo '### push-notification-server'
             echo
-            echo '\`${{ steps.exact.outputs.image_ref }}\`'
+            printf '`%s`\n' "$IMAGE_REF"
             echo
-            echo 'Use this exact image reference in GitOps. Do not deploy the mutable `main` or SHA tag.'
+            printf '%s\n' 'Use this exact image reference in GitOps. Do not deploy a mutable tag.'
           } >> "$GITHUB_STEP_SUMMARY"
