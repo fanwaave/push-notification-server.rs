@@ -1,0 +1,29 @@
+# Fanwaave SOPS policy. Every age1... value below is PUBLIC key material.
+# Private identities and decrypted values must never enter Git, Linear, logs,
+# caches, build layers, pull-request artifacts, or provider request fixtures.
+#
+# This repository may carry encrypted local/dev/test or reviewed operator
+# profiles. Canonical production provider secrets should be delivered to the
+# runtime by the deployment secret store; prod.env.enc is not proof that secret
+# ownership moved into this service repository.
+#
+# Recipient changes:
+#   1. edit only public age1... values here;
+#   2. run `sops updatekeys env/enc/<dev|prod>.env.enc` on an authorized host;
+#   3. commit only re-keyed ciphertext;
+#   4. rotate provider credentials after removing a recipient.
+creation_rules:
+  - path_regex: ^env/enc/dev\.env\.enc$
+    age:
+      # Daily development/operator identity.
+      - age1qrnva7lnv2jzww6ah5au0cqm4wkvkm5shpzflekdcm4nlu6wnyfqgfaxft
+      # Independently stored recovery identity.
+      - age1txv6jzlds2s03advmdtnm5l93qh4rkqs50nwvzk9yfvsartzue8se8t7jv
+
+  - path_regex: ^env/enc/prod\.env\.enc$
+    age:
+      # Distinct protected-operator bootstrap recipient. Verify custody and a
+      # protected decryptability witness before production reliance.
+      - age1s8lcnaxn9g77s6j4g7p24w6sgvllpue0lzrsvp3xk02k2gwjj5ssnkp39q
+      # Independently stored recovery identity.
+      - age1txv6jzlds2s03advmdtnm5l93qh4rkqs50nwvzk9yfvsartzue8se8t7jv
