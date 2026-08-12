@@ -72,7 +72,7 @@ fn validate_sendgrid_mail_send_scopes(payload: &[u8]) -> Result<(), &'static str
     let mut scopes = document.scopes;
     scopes.sort_unstable();
     scopes.dedup();
-    if scopes != ["mail.send"] {
+    if scopes.len() != 1 || scopes[0] != "mail.send" {
         return Err("SendGrid canary key must have exactly the mail.send scope");
     }
     Ok(())
@@ -208,8 +208,7 @@ async fn twilio_test_credentials_accept_the_canonical_sms_contract() {
 
 #[test]
 fn accepts_only_the_exact_sendgrid_mail_send_scope() {
-    validate_sendgrid_mail_send_scopes(br#"{"scopes":["mail.send"]}"#)
-        .expect("mail.send-only key");
+    validate_sendgrid_mail_send_scopes(br#"{"scopes":["mail.send"]}"#).expect("mail.send-only key");
     assert!(
         validate_sendgrid_mail_send_scopes(
             br#"{"scopes":["api_keys.create","mail.send","stats.read"]}"#
