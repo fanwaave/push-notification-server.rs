@@ -1,11 +1,16 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::time::Duration;
 
 use push_notification_server::{
     ContactContent, ContactJob, ContactOutcomeClass, ContactProvider, ContactProviderKind,
     ContactTarget, ContractVersion, SendGridConfig, SendGridProvider, SendGridRegion,
     TraceMetadata, TwilioConfig, TwilioCredentials, TwilioProvider, TwilioSender,
 };
+use reqwest::redirect::Policy;
+use serde::Deserialize;
+
+const MAX_SENDGRID_SCOPES_RESPONSE_BYTES: u64 = 64 * 1024;
 
 fn required_env(name: &str) -> String {
     env::var(name)
@@ -13,6 +18,16 @@ fn required_env(name: &str) -> String {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| panic!("{name} is required for this ignored provider canary"))
+}
+
+fn required_secret_env(name: &str) -> String {
+    let value = env::var(name)
+        .unwrap_or_else(|_| panic!("{name} is required for this ignored provider canary"));
+    assert!(
+        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic()),
+        "{name} must contain exact printable ASCII bytes without whitespace"
+    );
+    value
 }
 
 fn contact_job(
@@ -37,13 +52,78 @@ fn contact_job(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SendGridScopesResponse {
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+fn validate_sendgrid_mail_send_scopes(payload: &[u8]) -> Result<(), &'static str> {
+    let document = serde_json::from_slice::<SendGridScopesResponse>(payload)
+        .map_err(|_| "SendGrid scopes response was not valid JSON")?;
+    if document
+        .scopes
+        .iter()
+        .any(|scope| scope.is_empty() || scope.len() > 128 || !scope.is_ascii())
+    {
+        return Err("SendGrid scopes response contained an invalid scope name");
+    }
+
+    let mut scopes = document.scopes;
+    scopes.sort_unstable();
+    scopes.dedup();
+    if scopes != ["mail.send"] {
+        return Err("SendGrid canary key must have exactly the mail.send scope");
+    }
+    Ok(())
+}
+
+async fn assert_sendgrid_mail_send_only(api_key: &str, region: SendGridRegion) {
+    let base_url = match region {
+        SendGridRegion::Global => "https://api.sendgrid.com",
+        SendGridRegion::Europe => "https://api.eu.sendgrid.com",
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(Policy::none())
+        .build()
+        .expect("SendGrid scope-check HTTP client");
+    let response = client
+        .get(format!("{base_url}/v3/scopes"))
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .expect("SendGrid scope verification request");
+    let status = response.status();
+    assert!(
+        status.is_success(),
+        "SendGrid scope verification failed with HTTP {}",
+        status.as_u16()
+    );
+    if let Some(content_length) = response.content_length() {
+        assert!(
+            content_length <= MAX_SENDGRID_SCOPES_RESPONSE_BYTES,
+            "SendGrid scopes response exceeded the size limit"
+        );
+    }
+    let payload = response
+        .bytes()
+        .await
+        .expect("read SendGrid scope verification response");
+    assert!(
+        payload.len() as u64 <= MAX_SENDGRID_SCOPES_RESPONSE_BYTES,
+        "SendGrid scopes response exceeded the size limit"
+    );
+    validate_sendgrid_mail_send_scopes(&payload).expect("least-privilege SendGrid canary key");
+}
+
 /// Validates the exact SendGrid Mail Send request against the configured account
-/// without delivering email. SendGrid sandbox mode returns validation results but
-/// generates no delivery or Event Webhook activity.
+/// without delivering email. The canary first authenticates the key through the
+/// scopes endpoint and rejects Full Access or mixed-purpose credentials.
 #[tokio::test]
 #[ignore = "requires SendGrid sandbox canary secrets"]
 async fn sendgrid_sandbox_accepts_the_canonical_email_contract() {
-    let api_key = required_env("SENDGRID_CANARY_API_KEY");
+    let api_key = required_secret_env("SENDGRID_CANARY_API_KEY");
     let from_email = required_env("SENDGRID_CANARY_FROM_EMAIL");
     let to_email = required_env("SENDGRID_CANARY_TO_EMAIL");
     let region = match env::var("SENDGRID_CANARY_REGION")
@@ -56,6 +136,7 @@ async fn sendgrid_sandbox_accepts_the_canonical_email_contract() {
         "eu" | "europe" => SendGridRegion::Europe,
         value => panic!("unsupported SENDGRID_CANARY_REGION: {value}"),
     };
+    assert_sendgrid_mail_send_only(&api_key, region).await;
     let config = SendGridConfig::new(
         api_key,
         from_email,
@@ -96,8 +177,8 @@ async fn sendgrid_sandbox_accepts_the_canonical_email_contract() {
 #[tokio::test]
 #[ignore = "requires Twilio test credentials"]
 async fn twilio_test_credentials_accept_the_canonical_sms_contract() {
-    let account_sid = required_env("TWILIO_TEST_ACCOUNT_SID");
-    let auth_token = required_env("TWILIO_TEST_AUTH_TOKEN");
+    let account_sid = required_secret_env("TWILIO_TEST_ACCOUNT_SID");
+    let auth_token = required_secret_env("TWILIO_TEST_AUTH_TOKEN");
     let to_number = required_env("TWILIO_TEST_TO_NUMBER");
     let config = TwilioConfig::new(
         account_sid,
@@ -123,4 +204,17 @@ async fn twilio_test_credentials_accept_the_canonical_sms_contract() {
         ContactTarget::Sms { e164 } => e164,
         _ => unreachable!(),
     }));
+}
+
+#[test]
+fn accepts_only_the_exact_sendgrid_mail_send_scope() {
+    validate_sendgrid_mail_send_scopes(br#"{"scopes":["mail.send"]}"#)
+        .expect("mail.send-only key");
+    assert!(
+        validate_sendgrid_mail_send_scopes(
+            br#"{"scopes":["api_keys.create","mail.send","stats.read"]}"#
+        )
+        .is_err()
+    );
+    assert!(validate_sendgrid_mail_send_scopes(br#"{"scopes":[]}"#).is_err());
 }
