@@ -1,10 +1,37 @@
 /target/
-.env
+/result
+.direnv/
+
+# Plaintext dotenv is local-only at every depth, including common suffixes.
+*.env
+**/*.env
 .env.*
 !.env.example
+
+# Decrypted material is never tracked.
+/env/dec/
+env/dec/
+
+# Only the two approved SOPS ciphertext files may be tracked.
+/env/enc/*
+!/env/enc/dev.env.enc
+!/env/enc/prod.env.enc
+
+# Provider credentials and key material must never be committed directly.
 *.pem
 *.p8
+*.key
 *service-account*.json
+
+# age private keys — never commit these.
+*.agekey
+*.age-key
+keys.txt
+sops-private*.txt
+
+# Local/editor/tool output.
+__pycache__/
+*.py[cod]
 .DS_Store
 .idea/
 .vscode/
@@ -12,16 +39,3 @@ tmp
 temp
 tmp/worktrees
 temp/worktrees
-
-# --- environment / secrets (sops + age) -------------------------------------
-# Only env/enc/*.env.enc is tracked. Every plaintext form stays out of git;
-# `just env-check` enforces it. See env/README.md.
-*.env
-**/*.env
-env/dec/
-
-# age private keys — never commit these.
-*.agekey
-*.age-key
-keys.txt
-sops-private*.txt
