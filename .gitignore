@@ -4,14 +4,13 @@
 
 # Plaintext dotenv is local-only at every depth, including common suffixes.
 *.env
-*/*.env
-*/**/*.env
+**/*.env
 .env.*
-*.env.*
 !.env.example
 
 # Decrypted material is never tracked.
 /env/dec/
+env/dec/
 
 # Only the two approved SOPS ciphertext files may be tracked.
 /env/enc/*
@@ -24,6 +23,12 @@
 *.key
 *service-account*.json
 
+# age private keys — never commit these.
+*.agekey
+*.age-key
+keys.txt
+sops-private*.txt
+
 # Local/editor/tool output.
 __pycache__/
 *.py[cod]
@@ -33,3 +38,4 @@ __pycache__/
 tmp
 temp
 tmp/worktrees
+temp/worktrees
