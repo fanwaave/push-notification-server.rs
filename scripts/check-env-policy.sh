@@ -41,15 +41,13 @@ python3 scripts/verify-sops-release-policy.py .sops.yaml prod
 
 python3 - <<'PY'
 from pathlib import Path
-
 text = Path("justfile").read_text(encoding="utf-8")
-for recipe in ("use name:", "encrypt name:", "refresh:"):
-    start = text.index(recipe)
-    next_recipe = text.find("\n\n", start)
-    body = text[start:] if next_recipe == -1 else text[start:next_recipe]
-    if "mkdir -p env/dec" not in body or "chmod 700 env/dec" not in body:
-        raise SystemExit(f"{recipe} must create a private env/dec directory before delegation")
+if "mkdir -p env/dec" in text or "mkdir -p env/enc env/dec" in text:
+    raise SystemExit("justfile must not mkdir env/dec; ores-sops ensure-dec owns that path")
+if "chmod 700 env/dec" in text:
+    raise SystemExit("justfile must not chmod env/dec before ores-sops")
 PY
+
 
 is_plaintext_env_path() {
   case "$1" in
