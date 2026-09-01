@@ -13,6 +13,7 @@ pub mod http_api;
 pub mod nats_ingestion;
 pub mod provider;
 pub mod providers;
+pub mod receipt;
 pub mod redaction;
 pub mod retry;
 pub mod runtime;
@@ -50,6 +51,10 @@ pub use providers::expo::{ExpoConfig, ExpoConfigError, ExpoProvider, ExpoReceipt
 pub use providers::fcm::{FcmConfig, FcmConfigError, FcmProvider};
 pub use providers::web_push::{
     WebPushConfig, WebPushConfigError, WebPushHostPolicy, WebPushProvider, redact_web_push_endpoint,
+};
+pub use receipt::{
+    DeliveryReceipt, DeliveryReceiptKey, DeliveryReceiptLedger, DeliveryReceiptReason,
+    DeliveryTerminalState, ReceiptError, ReceiptRecordResult,
 };
 pub use redaction::{TargetFingerprint, fingerprint_target, truncate_utf8};
 pub use retry::{RetryDecision, classify_http_status, parse_retry_after};
