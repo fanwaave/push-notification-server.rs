@@ -91,9 +91,8 @@ impl RetryPolicy {
         // Downward-only jitter keeps every local schedule at or below the
         // configured cap. The caller can derive entropy from a stable job ID so
         // retries spread across replicas while remaining reproducible.
-        let jitter_window = capped_millis
-            .saturating_mul(u128::from(self.jitter_basis_points))
-            / 10_000;
+        let jitter_window =
+            capped_millis.saturating_mul(u128::from(self.jitter_basis_points)) / 10_000;
         let jitter_offset = if jitter_window == 0 {
             0
         } else {
@@ -172,12 +171,7 @@ mod tests {
 
     #[test]
     fn retry_schedule_is_deterministic_exponential_and_bounded() {
-        let policy = RetryPolicy::new(
-            Duration::from_secs(1),
-            Duration::from_secs(8),
-            5,
-            2_000,
-        );
+        let policy = RetryPolicy::new(Duration::from_secs(1), Duration::from_secs(8), 5, 2_000);
 
         assert_eq!(
             policy.delay_for_attempt(0, 0, None),
@@ -204,12 +198,7 @@ mod tests {
 
     #[test]
     fn jitter_never_exceeds_the_local_cap_or_drops_below_the_configured_window() {
-        let policy = RetryPolicy::new(
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-            1,
-            2_000,
-        );
+        let policy = RetryPolicy::new(Duration::from_secs(10), Duration::from_secs(10), 1, 2_000);
 
         for entropy in 0..10_000 {
             let delay = policy
@@ -222,12 +211,7 @@ mod tests {
 
     #[test]
     fn provider_retry_after_is_honored_as_a_bounded_floor() {
-        let policy = RetryPolicy::new(
-            Duration::from_secs(1),
-            Duration::from_secs(30),
-            2,
-            2_000,
-        );
+        let policy = RetryPolicy::new(Duration::from_secs(1), Duration::from_secs(30), 2, 2_000);
 
         assert_eq!(
             policy.delay_for_attempt(0, 17, Some(Duration::from_secs(90))),
