@@ -32,21 +32,14 @@ keys:
   - &recovery age1txv6jzlds2s03advmdtnm5l93qh4rkqs50nwvzk9yfvsartzue8se8t7jv # offline recovery
 
 creation_rules:
-  - path_regex: env/enc/dev\.env\.enc$
+  - path_regex: ^env/enc/dev\.env\.enc$
     key_groups:
       - age:
           - *alex
           - *recovery
 
-  - path_regex: env/enc/prod\.env\.enc$
+  - path_regex: ^env/enc/prod\.env\.enc$
     key_groups:
       - age:
           - *prod_operator
-          - *recovery
-
-  # Any other profile (staging, test, …) is treated like dev.
-  - path_regex: env/enc/.*\.env\.enc$
-    key_groups:
-      - age:
-          - *alex
           - *recovery
