@@ -140,16 +140,26 @@ env-new name: _env-dec
 [group('env')]
 env-run name +cmd: _env-dec
     #!/usr/bin/env bash
+    set +x
     set -euo pipefail
-    src={{ _enc }}/{{ name }}.env.enc
-    [[ -f $src ]] || { echo "no such environment: {{ name }}" >&2; exit 1; }
-    # Deliberately NOT `sops exec-env`: it shells out to /bin/sh, and it treats
-    # the raw dotenv value as opaque so DQ="hello world" keeps its quotes.
-    # .just/dotenv.py applies the ordinary dotenv rules once, so every consumer
-    # (here, docker, kubernetes) sees byte-identical values.
-    # Plaintext exists only in this process's memory and the child's env.
-    eval "$(sops decrypt {{ _fmt }} "$src" | {{ _dotenv }} shell)"
-    shift          # drop the environment name; "$@" is now the command
+    case "$1" in dev|prod) ;; *) echo "profile must be exactly dev or prod" >&2; exit 2 ;; esac
+    root="$(git rev-parse --show-toplevel)"
+    for rel in env env/enc; do
+      [[ ! -L "$root/$rel" && -d "$root/$rel" ]] || { echo "unsafe managed directory" >&2; exit 1; }
+    done
+    src="$root/env/enc/$1.env.enc"
+    [[ ! -L "$src" && -f "$src" ]] || { echo "missing or unsafe encrypted profile" >&2; exit 1; }
+    # Preserve the shared dotenv normalizer and real command argv. Crucially,
+    # an assignment checks the complete pipeline status BEFORE eval or exec:
+    # eval "$(failing-pipeline)" would otherwise turn failure into success.
+    # Scratch text must not become an extra exported child environment value.
+    declare +x _ores_sops_exports
+    if ! _ores_sops_exports=$(sops decrypt --input-type dotenv --output-type dotenv "$src" 2>/dev/null | python3 "$root/.just/dotenv.py" shell 2>/dev/null); then
+      echo "cannot decrypt or normalize the selected profile; child not started" >&2
+      exit 1
+    fi
+    eval "$_ores_sops_exports"
+    shift
     exec "$@"
 
 # Show which variables differ between env/dec/*.env and the committed ciphertext.

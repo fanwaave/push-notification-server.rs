@@ -1,0 +1,40 @@
+name: Fail-closed environment runner
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: env-run-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bash-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Exercise exact recipe body with non-secret stubs
+        shell: bash
+        run: |
+          bash -n tests/test-env-run.sh
+          bash tests/test-env-run.sh
+  real-just:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
+      - name: Exercise real Just with the pinned normalizer and non-secret stubs
+        shell: bash
+        run: nix develop ./.nix --no-update-lock-file -c bash tests/test-env-run.sh --with-just
