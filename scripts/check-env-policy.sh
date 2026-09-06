@@ -100,11 +100,21 @@ for file in env/enc/dev.env.enc env/enc/prod.env.enc; do
   test -f "$file" || continue
   grep -q '^sops_mac=ENC\[' "$file" || fail "$file does not look like SOPS dotenv ciphertext"
   while IFS= read -r line || test -n "$line"; do
-    case "$line" in
-      sops_*=*) ;;
-      [A-Za-z_][A-Za-z0-9_]*=ENC\[*\]) ;;
-      [A-Za-z_][A-Za-z0-9_]*=*) fail "$file contains an obvious plaintext assignment" ;;
-    esac
+    if [[ "$line" =~ ^sops_[A-Za-z0-9_]*= ]]; then
+      continue
+    fi
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=$ ]]; then
+      # SOPS preserves an explicitly empty dotenv value as NAME=. There are
+      # no bytes to disclose, and requiring fake ciphertext would change the
+      # authored environment shape.
+      continue
+    fi
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=ENC\[.*\]$ ]]; then
+      continue
+    fi
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      fail "$file contains an obvious nonempty plaintext assignment"
+    fi
   done < "$file"
 done
 
