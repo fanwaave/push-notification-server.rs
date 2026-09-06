@@ -49,7 +49,6 @@ if "chmod 700 env/dec" in text:
     raise SystemExit("justfile must not chmod env/dec before ores-sops")
 PY
 
-
 is_plaintext_env_path() {
   case "$1" in
     .env.example|*/.env.example) return 1 ;;
@@ -81,8 +80,20 @@ done < <(git ls-files -z)
 age_private='AGE-SE''CRET-KEY-1'
 pem_private='-----BEGIN ''PRIVATE KEY-----'
 openssh_private='-----BEGIN OPENSSH ''PRIVATE KEY-----'
-if git grep -I -q -e "$age_private" -e "$pem_private" -e "$openssh_private" -- .; then
-  fail "tracked private-key material detected"
+private_key_paths=()
+while IFS= read -r -d '' path; do
+  private_key_paths+=("$path")
+done < <(
+  git grep --cached -I -F -l -z \
+    -e "$age_private" \
+    -e "$pem_private" \
+    -e "$openssh_private" \
+    -- . || true
+)
+if ((${#private_key_paths[@]} > 0)); then
+  printf 'encrypted-env policy: tracked private-key material detected in %q\n' \
+    "${private_key_paths[@]}" >&2
+  exit 1
 fi
 
 for file in env/enc/dev.env.enc env/enc/prod.env.enc; do
