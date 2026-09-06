@@ -37,6 +37,7 @@ rule_count=$(grep -E '^[[:space:]-]*path_regex: .*env/enc' .sops.yaml | wc -l | 
 test "$rule_count" = 2 || fail "only exact dev/prod env/enc rules are allowed"
 recipient_count=$(grep -Eo 'age1[a-z0-9]{58}' .sops.yaml | sort -u | wc -l | tr -d ' ')
 test "$recipient_count" -ge 3 || fail "dev/prod policy requires at least three distinct public recipients"
+python3 scripts/verify-sops-release-policy.py --self-test
 python3 scripts/verify-sops-release-policy.py .sops.yaml prod
 
 python3 - <<'PY'
