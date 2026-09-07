@@ -18,6 +18,12 @@ pub enum ContactRuntimeConfigError {
     #[error("SENDGRID_REGION must be global or eu")]
     InvalidSendGridRegion,
 
+    #[error("SENDGRID_API_KEY must be an exact SG.-prefixed key of 20 to 69 printable ASCII bytes")]
+    InvalidSendGridApiKey,
+
+    #[error("{0} must contain exact printable ASCII bytes without whitespace")]
+    InvalidProviderCredential(&'static str),
+
     #[error("configure exactly one Twilio credential mode: Auth Token or API Key")]
     AmbiguousTwilioCredentials,
 
@@ -46,12 +52,13 @@ pub fn contact_registry_from_env() -> Result<ContactProviderRegistry, ContactRun
 fn configure_sendgrid(
     registry: ContactProviderRegistry,
 ) -> Result<ContactProviderRegistry, ContactRuntimeConfigError> {
-    let api_key = non_empty_env("SENDGRID_API_KEY");
+    let api_key = provider_credential_env("SENDGRID_API_KEY")?;
     let from_email = non_empty_env("SENDGRID_FROM_EMAIL").or_else(|| non_empty_env("EMAIL_FROM"));
     if api_key.is_none() && from_email.is_none() {
         return Ok(registry);
     }
     let api_key = api_key.ok_or(ContactRuntimeConfigError::IncompleteProvider("sendgrid"))?;
+    validate_sendgrid_api_key(&api_key)?;
     let from_email = from_email.ok_or(ContactRuntimeConfigError::IncompleteProvider("sendgrid"))?;
     let region = parse_sendgrid_region(non_empty_env("SENDGRID_REGION").as_deref())?;
     let config = SendGridConfig::new(
@@ -68,11 +75,11 @@ fn configure_sendgrid(
 fn configure_twilio(
     registry: ContactProviderRegistry,
 ) -> Result<ContactProviderRegistry, ContactRuntimeConfigError> {
-    let account_sid = non_empty_env("TWILIO_ACCOUNT_SID");
-    let auth_token = non_empty_env("TWILIO_AUTH_TOKEN");
-    let api_key_sid = non_empty_env("TWILIO_API_KEY_SID");
-    let api_key_secret = non_empty_env("TWILIO_API_KEY_SECRET");
-    let messaging_service_sid = non_empty_env("TWILIO_MESSAGING_SERVICE_SID");
+    let account_sid = provider_credential_env("TWILIO_ACCOUNT_SID")?;
+    let auth_token = provider_credential_env("TWILIO_AUTH_TOKEN")?;
+    let api_key_sid = provider_credential_env("TWILIO_API_KEY_SID")?;
+    let api_key_secret = provider_credential_env("TWILIO_API_KEY_SECRET")?;
+    let messaging_service_sid = provider_credential_env("TWILIO_MESSAGING_SERVICE_SID")?;
     let from_number = non_empty_env("TWILIO_FROM_NUMBER");
     let status_callback = non_empty_env("TWILIO_STATUS_CALLBACK_URL");
     let validity_period = non_empty_env("TWILIO_VALIDITY_PERIOD_SECONDS");
@@ -127,6 +134,13 @@ fn parse_sendgrid_region(value: Option<&str>) -> Result<SendGridRegion, ContactR
     }
 }
 
+fn validate_sendgrid_api_key(value: &str) -> Result<(), ContactRuntimeConfigError> {
+    if !value.starts_with("SG.") || !(20..=69).contains(&value.len()) {
+        return Err(ContactRuntimeConfigError::InvalidSendGridApiKey);
+    }
+    Ok(())
+}
+
 fn twilio_credentials(
     auth_token: Option<String>,
     api_key_sid: Option<String>,
@@ -156,6 +170,29 @@ fn twilio_sender(
         (None, Some(e164)) => Ok(TwilioSender::PhoneNumber { e164 }),
         (None, None) => Err(ContactRuntimeConfigError::IncompleteProvider("twilio")),
     }
+}
+
+fn provider_credential_env(
+    name: &'static str,
+) -> Result<Option<String>, ContactRuntimeConfigError> {
+    match env::var(name) {
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => validate_provider_credential(name, value).map(Some),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(ContactRuntimeConfigError::InvalidProviderCredential(name))
+        }
+    }
+}
+
+fn validate_provider_credential(
+    name: &'static str,
+    value: String,
+) -> Result<String, ContactRuntimeConfigError> {
+    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(ContactRuntimeConfigError::InvalidProviderCredential(name));
+    }
+    Ok(value)
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -189,6 +226,29 @@ mod tests {
             SendGridRegion::Europe
         );
         assert!(parse_sendgrid_region(Some("moon")).is_err());
+    }
+
+    #[test]
+    fn validates_sendgrid_key_shape_without_echoing_values() {
+        let valid = format!("SG.{}.{}", "a".repeat(22), "b".repeat(43));
+        validate_sendgrid_api_key(&valid).expect("valid SendGrid key shape");
+
+        let marker = "not-a-sendgrid-key";
+        let error = validate_sendgrid_api_key(marker)
+            .expect_err("invalid key")
+            .to_string();
+        assert!(error.contains("SENDGRID_API_KEY"));
+        assert!(!error.contains(marker));
+    }
+
+    #[test]
+    fn rejects_provider_credential_whitespace_without_echoing_values() {
+        let marker = "secret with whitespace";
+        let error = validate_provider_credential("TWILIO_AUTH_TOKEN", marker.to_owned())
+            .expect_err("invalid credential")
+            .to_string();
+        assert!(error.contains("TWILIO_AUTH_TOKEN"));
+        assert!(!error.contains(marker));
     }
 
     #[test]

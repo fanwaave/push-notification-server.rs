@@ -37,6 +37,7 @@ rule_count=$(grep -E '^[[:space:]-]*path_regex: .*env/enc' .sops.yaml | wc -l | 
 test "$rule_count" = 2 || fail "only exact dev/prod env/enc rules are allowed"
 recipient_count=$(grep -Eo 'age1[a-z0-9]{58}' .sops.yaml | sort -u | wc -l | tr -d ' ')
 test "$recipient_count" -ge 3 || fail "dev/prod policy requires at least three distinct public recipients"
+python3 scripts/verify-sops-release-policy.py --self-test
 python3 scripts/verify-sops-release-policy.py .sops.yaml prod
 
 python3 - <<'PY'
@@ -47,7 +48,6 @@ if "mkdir -p env/dec" in text or "mkdir -p env/enc env/dec" in text:
 if "chmod 700 env/dec" in text:
     raise SystemExit("justfile must not chmod env/dec before ores-sops")
 PY
-
 
 is_plaintext_env_path() {
   case "$1" in
@@ -80,19 +80,41 @@ done < <(git ls-files -z)
 age_private='AGE-SE''CRET-KEY-1'
 pem_private='-----BEGIN ''PRIVATE KEY-----'
 openssh_private='-----BEGIN OPENSSH ''PRIVATE KEY-----'
-if git grep -I -q -e "$age_private" -e "$pem_private" -e "$openssh_private" -- .; then
-  fail "tracked private-key material detected"
+private_key_paths=()
+while IFS= read -r -d '' path; do
+  private_key_paths+=("$path")
+done < <(
+  git grep --cached -I -F -l -z \
+    -e "$age_private" \
+    -e "$pem_private" \
+    -e "$openssh_private" \
+    -- . || true
+)
+if ((${#private_key_paths[@]} > 0)); then
+  printf 'encrypted-env policy: tracked private-key material detected in %q\n' \
+    "${private_key_paths[@]}" >&2
+  exit 1
 fi
 
 for file in env/enc/dev.env.enc env/enc/prod.env.enc; do
   test -f "$file" || continue
   grep -q '^sops_mac=ENC\[' "$file" || fail "$file does not look like SOPS dotenv ciphertext"
   while IFS= read -r line || test -n "$line"; do
-    case "$line" in
-      sops_*=*) ;;
-      [A-Za-z_][A-Za-z0-9_]*=ENC\[*\]) ;;
-      [A-Za-z_][A-Za-z0-9_]*=*) fail "$file contains an obvious plaintext assignment" ;;
-    esac
+    if [[ "$line" =~ ^sops_[A-Za-z0-9_]*= ]]; then
+      continue
+    fi
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=$ ]]; then
+      # SOPS preserves an explicitly empty dotenv value as NAME=. There are
+      # no bytes to disclose, and requiring fake ciphertext would change the
+      # authored environment shape.
+      continue
+    fi
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=ENC\[.*\]$ ]]; then
+      continue
+    fi
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      fail "$file contains an obvious nonempty plaintext assignment"
+    fi
   done < "$file"
 done
 
