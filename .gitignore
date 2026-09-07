@@ -5,6 +5,8 @@
 # Plaintext dotenv is local-only at every depth, including common suffixes.
 *.env
 **/*.env
+*.env.*
+**/*.env.*
 .env.*
 !.env.example
 
