@@ -16,9 +16,7 @@ const RECEIPT_KEY_PREFIX: &str = "receipt:v1:";
 ///
 /// The producer idempotency key and tenant/application identifiers never enter
 /// receipts directly. Length-prefixed hashing avoids delimiter ambiguity.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(transparent)]
 pub struct DeliveryReceiptKey(String);
 
@@ -32,7 +30,10 @@ impl DeliveryReceiptKey {
         hash_part(&mut hasher, &job.idempotency_key);
         hash_part(&mut hasher, job.provider.as_str());
         hash_part(&mut hasher, target.as_str());
-        Self(format!("{RECEIPT_KEY_PREFIX}{}", hex::encode(hasher.finalize())))
+        Self(format!(
+            "{RECEIPT_KEY_PREFIX}{}",
+            hex::encode(hasher.finalize())
+        ))
     }
 
     pub fn as_str(&self) -> &str {
@@ -311,7 +312,10 @@ mod tests {
             "private notification title",
             "private notification body",
         ] {
-            assert!(!serialized.contains(forbidden), "receipt leaked {forbidden}");
+            assert!(
+                !serialized.contains(forbidden),
+                "receipt leaked {forbidden}"
+            );
         }
         assert!(serialized.contains("target_fingerprint"));
         assert!(serialized.contains(RECEIPT_KEY_PREFIX));
