@@ -14,7 +14,7 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 ece = "2.3"
-flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "b708a041531a830bd49f030250836896096e7abd" }
+flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "333c2ace93c362d274171ab0e0edf613d96a8e59" }
 futures-util = "0.3"
 hex = "0.4"
 httpdate = "1"
