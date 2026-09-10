@@ -1,0 +1,29 @@
+[help]
+url = "https://github.com/fanwaave/push-notification-server.rs"
+columns = ["options", "env", "type", "default", "description"]
+
+[env]
+load = false
+
+[parse]
+allow_unknown = false
+
+[flags.host]
+env = "HOST"
+aliases = ["host"]
+type = "string"
+default = "0.0.0.0"
+help = "HTTP bind host."
+
+[flags.port]
+env = "PORT"
+aliases = ["port"]
+type = "string"
+default = "8121"
+help = "HTTP bind port."
+
+[flags.export-openapi]
+env = "FANWAAVE_EXPORT_OPENAPI"
+aliases = ["export-openapi"]
+type = "string"
+help = "Export OpenAPI and exit. Accepted values: internal or public."
