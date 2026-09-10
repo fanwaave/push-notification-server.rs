@@ -1,0 +1,35 @@
+name: temporary lock refresh proof
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - name: Regenerate lock from declared dependency graph
+        run: cargo generate-lockfile
+      - name: Verify generated lock and flags-2-env integration
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+      - name: Emit generated Cargo.lock for review
+        if: always()
+        shell: bash
+        run: |
+          echo BEGIN_CARGO_LOCK_BASE64
+          base64 -w0 Cargo.lock
+          echo
+          echo END_CARGO_LOCK_BASE64
