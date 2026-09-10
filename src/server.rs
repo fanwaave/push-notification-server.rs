@@ -1,14 +1,15 @@
-use std::{collections::BTreeMap, env, fmt, net::SocketAddr, path::Path};
+use std::{env, fmt, net::SocketAddr, path::Path};
 
-use flags2env::BundledFlags2Env;
+use flags2env::{
+    BundledFlags2Env,
+    env_map::{EnvBindingSpec, EnvMap, EnvValueKind, resolve_typed_bindings},
+};
 use push_notification_server::{
     ApiState, ContactApiState, NatsConfig, application_router, canonical_json,
     contact_registry_from_env, openapi_document, provider_registry_from_env,
     public_openapi_document, request_authenticator_from_env, run_nats_consumer,
 };
 use tracing_subscriber::EnvFilter;
-
-type EnvMap = BTreeMap<String, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenApiScope {
@@ -134,6 +135,8 @@ fn parse_runtime_args(
 
     let mut merged_env = ambient_env;
     merged_env.extend(parsed.provided_flags);
+    validate_runtime_env(&merged_env)?;
+
     let export_openapi = merged_env
         .get("FANWAAVE_EXPORT_OPENAPI")
         .map(String::as_str)
@@ -144,6 +147,31 @@ fn parse_runtime_args(
         merged_env,
         export_openapi,
     })
+}
+
+fn validate_runtime_env(runtime_env: &EnvMap) -> Result<(), ArgumentError> {
+    let specs = [
+        EnvBindingSpec::optional("host", "HOST", EnvValueKind::String),
+        EnvBindingSpec::optional("port", "PORT", EnvValueKind::Integer),
+        EnvBindingSpec::optional(
+            "export_openapi",
+            "FANWAAVE_EXPORT_OPENAPI",
+            EnvValueKind::String,
+        ),
+    ];
+
+    resolve_typed_bindings(runtime_env, &specs)
+        .map(|_| ())
+        .map_err(|diagnostics| {
+            ArgumentError(format!(
+                "runtime environment preflight failed: {}",
+                diagnostics
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ))
+        })
 }
 
 fn parse_openapi_scope(value: &str) -> Result<OpenApiScope, ArgumentError> {
@@ -227,19 +255,37 @@ mod tests {
 
     #[test]
     fn rejects_unknown_flags_and_unsupported_openapi_scope() {
-        assert!(parse_runtime_args(
-            &["server".to_owned(), "--not-declared=yes".to_owned()],
-            EnvMap::new(),
-            &flags_contract(),
-        )
-        .is_err());
+        assert!(
+            parse_runtime_args(
+                &["server".to_owned(), "--not-declared=yes".to_owned()],
+                EnvMap::new(),
+                &flags_contract(),
+            )
+            .is_err()
+        );
 
-        assert!(parse_runtime_args(
-            &["server".to_owned(), "--export-openapi=partner".to_owned()],
-            EnvMap::new(),
+        assert!(
+            parse_runtime_args(
+                &["server".to_owned(), "--export-openapi=partner".to_owned()],
+                EnvMap::new(),
+                &flags_contract(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_ambient_port_before_socket_startup() {
+        let error = parse_runtime_args(
+            &["server".to_owned()],
+            EnvMap::from([("PORT".to_owned(), "08121".to_owned())]),
             &flags_contract(),
         )
-        .is_err());
+        .expect_err("noncanonical integer must fail closed");
+
+        assert!(error.to_string().contains("ENV_PARSE"));
+        assert!(error.to_string().contains("PORT"));
+        assert!(!error.to_string().contains("08121"));
     }
 
     #[test]
@@ -255,7 +301,10 @@ mod tests {
         )
         .expect("valid runtime args");
 
-        assert_eq!(runtime.merged_env.get("PORT").map(String::as_str), Some("9001"));
+        assert_eq!(
+            runtime.merged_env.get("PORT").map(String::as_str),
+            Some("9001")
+        );
         assert_eq!(
             bind_address(&runtime.merged_env).expect("valid bind"),
             "127.0.0.1:9001".parse().expect("socket address")
