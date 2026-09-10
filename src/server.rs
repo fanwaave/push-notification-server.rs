@@ -44,11 +44,7 @@ where
     I: IntoIterator<Item = String>,
 {
     let args = args.into_iter().collect::<Vec<_>>();
-    let runtime = parse_runtime_args(
-        &args,
-        env::vars().collect(),
-        Path::new(".cli-flags.toml"),
-    )?;
+    let runtime = parse_runtime_args(&args, env::vars().collect(), Path::new(".cli-flags.toml"))?;
 
     if let Some(scope) = runtime.export_openapi {
         let openapi = match scope {
@@ -107,9 +103,9 @@ fn parse_runtime_args(
         .to_str()
         .ok_or_else(|| ArgumentError(".cli-flags.toml path is not valid UTF-8".to_owned()))?;
     let parser = BundledFlags2Env::new();
-    parser
-        .audit_config(Some(config_path))
-        .map_err(|error| ArgumentError(format!("flags-2-env configuration audit failed: {error}")))?;
+    parser.audit_config(Some(config_path)).map_err(|error| {
+        ArgumentError(format!("flags-2-env configuration audit failed: {error}"))
+    })?;
     let parsed = parser
         .parse_structured(args, Some(config_path))
         .map_err(|error| ArgumentError(format!("flags-2-env parse failed: {error}")))?;
