@@ -1,4 +1,4 @@
-use std::{env, fmt, net::SocketAddr, path::Path};
+use std::{env, fmt, net::SocketAddr, path::{Path, PathBuf}};
 
 use flags2env::{
     BundledFlags2Env,
@@ -44,7 +44,8 @@ where
     I: IntoIterator<Item = String>,
 {
     let args = args.into_iter().collect::<Vec<_>>();
-    let runtime = parse_runtime_args(&args, env::vars().collect(), Path::new(".cli-flags.toml"))?;
+    let contract_path = flags_contract_path();
+    let runtime = parse_runtime_args(&args, env::vars().collect(), &contract_path)?;
 
     if let Some(scope) = runtime.export_openapi {
         let openapi = match scope {
@@ -92,6 +93,12 @@ where
         .await?;
 
     Ok(())
+}
+
+fn flags_contract_path() -> PathBuf {
+    env::var_os("FLAGS2ENV_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".cli-flags.toml"))
 }
 
 fn parse_runtime_args(
