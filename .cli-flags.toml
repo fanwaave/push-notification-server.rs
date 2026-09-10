@@ -18,7 +18,7 @@ help = "HTTP bind host."
 [flags.port]
 env = "PORT"
 aliases = ["port"]
-type = "string"
+type = "integer"
 default = "8121"
 help = "HTTP bind port."
 
