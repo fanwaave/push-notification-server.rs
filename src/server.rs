@@ -1,4 +1,8 @@
-use std::{env, fmt, net::SocketAddr, path::{Path, PathBuf}};
+use std::{
+    env, fmt,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use flags2env::{
     BundledFlags2Env,
