@@ -53,31 +53,28 @@ pub enum ValidationError {
 }
 
 pub fn validate_push_job(job: &PushJob) -> Result<(), Vec<ValidationError>> {
-    let mut errors = Vec::new();
-
-    validate_identifier("job_id", &job.job_id, MAX_ID_BYTES, &mut errors);
-    validate_identifier("tenant_id", &job.tenant_id, MAX_ID_BYTES, &mut errors);
-    validate_identifier(
-        "application_id",
-        &job.application_id,
-        MAX_ID_BYTES,
-        &mut errors,
-    );
-    validate_identifier(
-        "idempotency_key",
-        &job.idempotency_key,
-        MAX_IDEMPOTENCY_KEY_BYTES,
-        &mut errors,
-    );
-
-    if job.provider != job.target.provider() {
-        errors.push(ValidationError::ProviderTargetMismatch);
-    }
-
-    validate_notification(job, &mut errors);
-    validate_options(job, &mut errors);
-    validate_trace(job, &mut errors);
-    validate_target(&job.target, &mut errors);
+    let errors = identifier_errors("job_id", &job.job_id, MAX_ID_BYTES)
+        .into_iter()
+        .chain(identifier_errors("tenant_id", &job.tenant_id, MAX_ID_BYTES))
+        .chain(identifier_errors(
+            "application_id",
+            &job.application_id,
+            MAX_ID_BYTES,
+        ))
+        .chain(identifier_errors(
+            "idempotency_key",
+            &job.idempotency_key,
+            MAX_IDEMPOTENCY_KEY_BYTES,
+        ))
+        .chain(
+            (job.provider != job.target.provider())
+                .then_some(ValidationError::ProviderTargetMismatch),
+        )
+        .chain(notification_errors(job))
+        .chain(option_errors(job))
+        .chain(trace_errors(job))
+        .chain(target_errors(&job.target))
+        .collect::<Vec<_>>();
 
     if errors.is_empty() {
         Ok(())
@@ -86,30 +83,24 @@ pub fn validate_push_job(job: &PushJob) -> Result<(), Vec<ValidationError>> {
     }
 }
 
-fn validate_identifier(
-    field: &'static str,
-    value: &str,
-    max_bytes: usize,
-    errors: &mut Vec<ValidationError>,
-) {
+fn identifier_errors(field: &'static str, value: &str, max_bytes: usize) -> Vec<ValidationError> {
     if value.trim().is_empty() {
-        errors.push(ValidationError::Required { field });
-        return;
+        return vec![ValidationError::Required { field }];
     }
 
-    if value.len() > max_bytes {
-        errors.push(ValidationError::TooLong { field, max_bytes });
-    }
-
-    if value
-        .chars()
-        .any(|character| character.is_control() || character.is_whitespace())
-    {
-        errors.push(ValidationError::InvalidCharacters { field });
-    }
+    [
+        (value.len() > max_bytes).then_some(ValidationError::TooLong { field, max_bytes }),
+        value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+            .then_some(ValidationError::InvalidCharacters { field }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-fn validate_notification(job: &PushJob, errors: &mut Vec<ValidationError>) {
+fn notification_errors(job: &PushJob) -> Vec<ValidationError> {
     let notification = &job.notification;
     let has_visible_or_data_content = notification
         .title
@@ -125,124 +116,125 @@ fn validate_notification(job: &PushJob, errors: &mut Vec<ValidationError>) {
             .is_some_and(|value| !value.trim().is_empty())
         || !notification.data.is_empty();
 
-    if !has_visible_or_data_content {
-        errors.push(ValidationError::EmptyNotification);
-    }
-
-    validate_optional_length(
-        "notification.title",
-        notification.title.as_deref(),
-        MAX_TITLE_BYTES,
-        errors,
-    );
-    validate_optional_length(
-        "notification.body",
-        notification.body.as_deref(),
-        MAX_BODY_BYTES,
-        errors,
-    );
-    validate_optional_length(
-        "notification.image_url",
-        notification.image_url.as_deref(),
-        MAX_IMAGE_URL_BYTES,
-        errors,
-    );
-
-    if to_vec(&notification.data)
-        .map(|encoded| encoded.len() > MAX_DATA_BYTES)
-        .unwrap_or(true)
-    {
-        errors.push(ValidationError::DataTooLarge {
-            max_bytes: MAX_DATA_BYTES,
-        });
-    }
+    [
+        (!has_visible_or_data_content).then_some(ValidationError::EmptyNotification),
+        optional_length_error(
+            "notification.title",
+            notification.title.as_deref(),
+            MAX_TITLE_BYTES,
+        ),
+        optional_length_error(
+            "notification.body",
+            notification.body.as_deref(),
+            MAX_BODY_BYTES,
+        ),
+        optional_length_error(
+            "notification.image_url",
+            notification.image_url.as_deref(),
+            MAX_IMAGE_URL_BYTES,
+        ),
+        to_vec(&notification.data)
+            .map(|encoded| encoded.len() > MAX_DATA_BYTES)
+            .unwrap_or(true)
+            .then_some(ValidationError::DataTooLarge {
+                max_bytes: MAX_DATA_BYTES,
+            }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-fn validate_options(job: &PushJob, errors: &mut Vec<ValidationError>) {
-    if job
-        .options
-        .ttl_seconds
-        .is_some_and(|ttl| ttl > MAX_TTL_SECONDS)
-    {
-        errors.push(ValidationError::TtlTooLarge {
-            max_seconds: MAX_TTL_SECONDS,
-        });
-    }
-
-    validate_optional_length(
-        "options.collapse_key",
-        job.options.collapse_key.as_deref(),
-        MAX_COLLAPSE_KEY_BYTES,
-        errors,
-    );
+fn option_errors(job: &PushJob) -> Vec<ValidationError> {
+    [
+        job.options
+            .ttl_seconds
+            .is_some_and(|ttl| ttl > MAX_TTL_SECONDS)
+            .then_some(ValidationError::TtlTooLarge {
+                max_seconds: MAX_TTL_SECONDS,
+            }),
+        optional_length_error(
+            "options.collapse_key",
+            job.options.collapse_key.as_deref(),
+            MAX_COLLAPSE_KEY_BYTES,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-fn validate_trace(job: &PushJob, errors: &mut Vec<ValidationError>) {
-    validate_optional_length(
-        "trace.traceparent",
-        job.trace.traceparent.as_deref(),
-        MAX_TRACE_FIELD_BYTES,
-        errors,
-    );
-    validate_optional_length(
-        "trace.tracestate",
-        job.trace.tracestate.as_deref(),
-        MAX_TRACE_FIELD_BYTES,
-        errors,
-    );
-    validate_optional_length(
-        "trace.correlation_id",
-        job.trace.correlation_id.as_deref(),
-        MAX_TRACE_FIELD_BYTES,
-        errors,
-    );
+fn trace_errors(job: &PushJob) -> Vec<ValidationError> {
+    [
+        optional_length_error(
+            "trace.traceparent",
+            job.trace.traceparent.as_deref(),
+            MAX_TRACE_FIELD_BYTES,
+        ),
+        optional_length_error(
+            "trace.tracestate",
+            job.trace.tracestate.as_deref(),
+            MAX_TRACE_FIELD_BYTES,
+        ),
+        optional_length_error(
+            "trace.correlation_id",
+            job.trace.correlation_id.as_deref(),
+            MAX_TRACE_FIELD_BYTES,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-fn validate_optional_length(
+fn optional_length_error(
     field: &'static str,
     value: Option<&str>,
     max_bytes: usize,
-    errors: &mut Vec<ValidationError>,
-) {
-    if value.is_some_and(|value| value.len() > max_bytes) {
-        errors.push(ValidationError::TooLong { field, max_bytes });
-    }
+) -> Option<ValidationError> {
+    value
+        .is_some_and(|value| value.len() > max_bytes)
+        .then_some(ValidationError::TooLong { field, max_bytes })
 }
 
-fn validate_target(target: &PushTarget, errors: &mut Vec<ValidationError>) {
+fn target_errors(target: &PushTarget) -> Vec<ValidationError> {
     match target {
-        PushTarget::Fcm { token } => validate_token("target.fcm.token", token, errors),
-        PushTarget::Apns { token, .. } => validate_token("target.apns.token", token, errors),
-        PushTarget::Expo { token } => validate_token("target.expo.token", token, errors),
+        PushTarget::Fcm { token } => token_errors("target.fcm.token", token),
+        PushTarget::Apns { token, .. } => token_errors("target.apns.token", token),
+        PushTarget::Expo { token } => token_errors("target.expo.token", token),
         PushTarget::WebPush {
             endpoint,
             p256dh,
             auth,
-        } => {
-            validate_web_push_endpoint(endpoint, errors);
-            if !valid_subscription_key(p256dh) || !valid_subscription_key(auth) {
-                errors.push(ValidationError::InvalidWebPushKeyMaterial);
-            }
-        }
+        } => [
+            web_push_endpoint_error(endpoint),
+            (!valid_subscription_key(p256dh) || !valid_subscription_key(auth))
+                .then_some(ValidationError::InvalidWebPushKeyMaterial),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
     }
 }
 
-fn validate_token(field: &'static str, token: &str, errors: &mut Vec<ValidationError>) {
+fn token_errors(field: &'static str, token: &str) -> Vec<ValidationError> {
     if token.len() < MIN_TOKEN_BYTES || token.len() > MAX_TOKEN_BYTES {
-        errors.push(ValidationError::InvalidLength { field });
-        return;
+        return vec![ValidationError::InvalidLength { field }];
     }
 
-    if token.chars().any(|character| {
-        character.is_control()
-            || character.is_whitespace()
-            || matches!(character, '/' | '\\' | '?' | '#' | '&')
-    }) {
-        errors.push(ValidationError::InvalidCharacters { field });
-    }
+    token
+        .chars()
+        .any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, '/' | '\\' | '?' | '#' | '&')
+        })
+        .then_some(ValidationError::InvalidCharacters { field })
+        .into_iter()
+        .collect()
 }
 
-fn validate_web_push_endpoint(endpoint: &str, errors: &mut Vec<ValidationError>) {
+fn web_push_endpoint_error(endpoint: &str) -> Option<ValidationError> {
     let valid = Url::parse(endpoint).ok().is_some_and(|url| {
         url.scheme() == "https"
             && url.host_str().is_some()
@@ -251,9 +243,7 @@ fn validate_web_push_endpoint(endpoint: &str, errors: &mut Vec<ValidationError>)
             && url.password().is_none()
     });
 
-    if !valid {
-        errors.push(ValidationError::InvalidWebPushEndpoint);
-    }
+    (!valid).then_some(ValidationError::InvalidWebPushEndpoint)
 }
 
 fn valid_subscription_key(value: &str) -> bool {
