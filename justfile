@@ -58,3 +58,8 @@ env-unuse:
     else
       echo "no .env to remove"
     fi
+
+# Structural production-recipient gate; decryptability still needs a protected witness.
+[group('env')]
+verify-release-policy name="prod":
+    @python3 scripts/verify-sops-release-policy.py .sops.yaml {{ name }}

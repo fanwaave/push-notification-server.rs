@@ -1,0 +1,2 @@
+# Keep SOPS dotenv ciphertext deterministic across platforms.
+/env/enc/*.env.enc text eol=lf
