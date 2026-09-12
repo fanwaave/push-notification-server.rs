@@ -30,8 +30,10 @@ LABEL org.opencontainers.image.source="https://github.com/fanwaave/push-notifica
       org.opencontainers.image.description="Provider-neutral Rust push and contact notification delivery service"
 
 COPY --from=builder /out/push-notification-server /usr/local/bin/push-notification-server
+COPY .cli-flags.toml /etc/fanwaave/push-notification-server.cli-flags.toml
 
-ENV HOST=0.0.0.0 \
+ENV FLAGS2ENV_CONFIG=/etc/fanwaave/push-notification-server.cli-flags.toml \
+    HOST=0.0.0.0 \
     PORT=8121 \
     RUST_LOG=push_notification_server=info
 
