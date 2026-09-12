@@ -342,9 +342,36 @@ async fn handle_message(
     };
 
     if let Err(error) = publish_json(context, &config.result_subject, &result).await {
-        let _ = message
-            .ack_with(jetstream::AckKind::Nak(Some(config.nak_delay)))
-            .await;
+        match disposition_for_result_publish_failure(
+            outcome.class,
+            delivery_attempt,
+            config.max_deliver,
+            config.nak_delay,
+        ) {
+            NatsDisposition::Ack => message.ack().await?,
+            NatsDisposition::Nak(delay) => {
+                message
+                    .ack_with(jetstream::AckKind::Nak(Some(delay)))
+                    .await?
+            }
+            NatsDisposition::DeadLetter => {
+                let event = dead_letter_for_payload(
+                    payload,
+                    "result_publish_failed_after_terminal_outcome",
+                    Some(&envelope.job),
+                    Some(outcome.clone()),
+                    delivery_attempt,
+                    config.max_deliver,
+                );
+                if let Err(dead_error) = publish_json(context, &config.dead_subject, &event).await {
+                    tracing::error!(
+                        %dead_error,
+                        "JetStream result and dead-letter publication both failed after terminal provider outcome; terminating source message to prevent duplicate irreversible delivery"
+                    );
+                }
+                message.ack_with(jetstream::AckKind::Term).await?;
+            }
+        }
         return Err(error);
     }
 
@@ -449,6 +476,27 @@ pub fn disposition_for_outcome(
         NatsDisposition::DeadLetter
     } else {
         NatsDisposition::Nak(nak_delay)
+    }
+}
+
+/// Decide how to settle a source job when the provider outcome already exists
+/// but publishing the result projection fails.
+///
+/// Terminal outcomes must never be NAKed merely because the projection failed:
+/// doing so re-dispatches an irreversible provider side effect and can create a
+/// duplicate notification. Retryable provider outcomes retain the ordinary
+/// retry budget. Terminal projection failures are routed to the dead-letter
+/// reconciliation lane and the source message is terminated.
+pub fn disposition_for_result_publish_failure(
+    class: OutcomeClass,
+    delivery_attempt: u64,
+    max_deliver: i64,
+    nak_delay: Duration,
+) -> NatsDisposition {
+    if class.is_retryable() {
+        disposition_for_outcome(class, delivery_attempt, max_deliver, nak_delay)
+    } else {
+        NatsDisposition::DeadLetter
     }
 }
 
@@ -692,6 +740,27 @@ mod tests {
         );
         assert_eq!(
             disposition_for_outcome(OutcomeClass::InternalFailure, 5, 5, delay),
+            NatsDisposition::DeadLetter
+        );
+    }
+
+    #[test]
+    fn result_publish_failures_do_not_redeliver_terminal_provider_outcomes() {
+        let delay = Duration::from_secs(15);
+        assert_eq!(
+            disposition_for_result_publish_failure(OutcomeClass::Accepted, 1, 5, delay),
+            NatsDisposition::DeadLetter
+        );
+        assert_eq!(
+            disposition_for_result_publish_failure(OutcomeClass::InvalidToken, 1, 5, delay),
+            NatsDisposition::DeadLetter
+        );
+        assert_eq!(
+            disposition_for_result_publish_failure(OutcomeClass::Throttled, 2, 5, delay),
+            NatsDisposition::Nak(delay)
+        );
+        assert_eq!(
+            disposition_for_result_publish_failure(OutcomeClass::InternalFailure, 5, 5, delay),
             NatsDisposition::DeadLetter
         );
     }
