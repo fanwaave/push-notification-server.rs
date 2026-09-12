@@ -150,13 +150,14 @@ impl ExpoProvider {
             .map(build_message)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut request = self
+        let request = self
             .client
             .post(self.config.send_url.clone())
             .json(&messages);
-        if let Some(access_token) = &self.config.access_token {
-            request = request.bearer_auth(access_token);
-        }
+        let request = match &self.config.access_token {
+            Some(access_token) => request.bearer_auth(access_token),
+            None => request,
+        };
         let response = request.send().await.map_err(|error| {
             ProviderError::delivery(
                 OutcomeClass::TransientProviderFailure,
@@ -242,13 +243,14 @@ impl ExpoProvider {
                     .collect(),
             ),
         )]));
-        let mut http_request = self
+        let http_request = self
             .client
             .post(self.config.receipts_url.clone())
             .json(&body);
-        if let Some(access_token) = &self.config.access_token {
-            http_request = http_request.bearer_auth(access_token);
-        }
+        let http_request = match &self.config.access_token {
+            Some(access_token) => http_request.bearer_auth(access_token),
+            None => http_request,
+        };
         let response = http_request.send().await.map_err(|error| {
             ProviderError::delivery(
                 OutcomeClass::TransientProviderFailure,
@@ -388,49 +390,52 @@ fn build_message(job: &PushJob) -> Result<Value, ProviderError> {
         ));
     }
 
-    let mut message = Map::new();
-    message.insert("to".to_owned(), Value::String(token.clone()));
-    if let Some(title) = &job.notification.title {
-        message.insert("title".to_owned(), Value::String(title.clone()));
-    }
-    if let Some(body) = &job.notification.body {
-        message.insert("body".to_owned(), Value::String(body.clone()));
-    }
-    if !job.notification.data.is_empty() {
-        message.insert(
-            "data".to_owned(),
-            Value::Object(
-                job.notification
-                    .data
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            ),
-        );
-    }
-    if let Some(image_url) = &job.notification.image_url {
-        message.insert(
-            "richContent".to_owned(),
-            Value::Object(Map::from_iter([(
-                "image".to_owned(),
-                Value::String(image_url.clone()),
-            )])),
-        );
-    }
-    if let Some(ttl_seconds) = job.options.ttl_seconds {
-        message.insert("ttl".to_owned(), Value::from(ttl_seconds));
-    }
-    message.insert(
-        "priority".to_owned(),
-        Value::String(match job.options.priority {
-            PushPriority::Normal => "normal".to_owned(),
-            PushPriority::High => "high".to_owned(),
+    let message: Map<String, Value> = [
+        Some(("to".to_owned(), Value::String(token.clone()))),
+        string_entry("title", job.notification.title.as_deref()),
+        string_entry("body", job.notification.body.as_deref()),
+        (!job.notification.data.is_empty()).then(|| {
+            (
+                "data".to_owned(),
+                Value::Object(
+                    job.notification
+                        .data
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+            )
         }),
-    );
-    if let Some(collapse_key) = &job.options.collapse_key {
-        message.insert("collapseId".to_owned(), Value::String(collapse_key.clone()));
-    }
+        job.notification.image_url.as_ref().map(|image_url| {
+            (
+                "richContent".to_owned(),
+                Value::Object(Map::from_iter([(
+                    "image".to_owned(),
+                    Value::String(image_url.clone()),
+                )])),
+            )
+        }),
+        job.options
+            .ttl_seconds
+            .map(|ttl_seconds| ("ttl".to_owned(), Value::from(ttl_seconds))),
+        Some((
+            "priority".to_owned(),
+            Value::String(match job.options.priority {
+                PushPriority::Normal => "normal".to_owned(),
+                PushPriority::High => "high".to_owned(),
+            }),
+        )),
+        string_entry("collapseId", job.options.collapse_key.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok(Value::Object(message))
+}
+
+/// One JSON string member, present only when the value is.
+fn string_entry(key: &str, value: Option<&str>) -> Option<(String, Value)> {
+    value.map(|value| (key.to_owned(), Value::String(value.to_owned())))
 }
 
 fn valid_expo_push_token(token: &str) -> bool {

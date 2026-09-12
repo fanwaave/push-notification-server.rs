@@ -270,67 +270,94 @@ fn build_mail_send_body(
         ));
     };
 
-    let mut recipient = Map::new();
-    recipient.insert("email".to_owned(), Value::String(address.clone()));
-    if let Some(name) = name {
-        recipient.insert("name".to_owned(), Value::String(name.clone()));
-    }
+    let recipient: Map<String, Value> = [
+        string_entry("email", Some(address.as_str())),
+        string_entry("name", name.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    let mut personalization = Map::new();
-    personalization.insert(
-        "to".to_owned(),
-        Value::Array(vec![Value::Object(recipient)]),
-    );
-    if !dynamic_template_data.is_empty() {
-        personalization.insert(
-            "dynamic_template_data".to_owned(),
-            Value::Object(
-                dynamic_template_data
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
+    let personalization: Map<String, Value> = [
+        Some((
+            "to".to_owned(),
+            Value::Array(vec![Value::Object(recipient)]),
+        )),
+        (!dynamic_template_data.is_empty()).then(|| {
+            (
+                "dynamic_template_data".to_owned(),
+                Value::Object(
+                    dynamic_template_data
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let sender: Map<String, Value> = [
+        string_entry("email", Some(config.from_email.as_str())),
+        string_entry("name", config.from_name.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    // Either a dynamic template or explicit subject/content, never both.
+    let content_members: Vec<(String, Value)> = match template_id {
+        Some(template_id) => vec![("template_id".to_owned(), Value::String(template_id.clone()))],
+        None => vec![
+            (
+                "subject".to_owned(),
+                Value::String(subject.clone().unwrap_or_default()),
             ),
-        );
-    }
+            (
+                "content".to_owned(),
+                Value::Array(
+                    [
+                        text.as_ref()
+                            .map(|text| json!({"type": "text/plain", "value": text})),
+                        html.as_ref()
+                            .map(|html| json!({"type": "text/html", "value": html})),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                ),
+            ),
+        ],
+    };
 
-    let mut sender = Map::new();
-    sender.insert("email".to_owned(), Value::String(config.from_email.clone()));
-    if let Some(name) = &config.from_name {
-        sender.insert("name".to_owned(), Value::String(name.clone()));
-    }
-
-    let mut root = Map::new();
-    root.insert(
-        "personalizations".to_owned(),
-        Value::Array(vec![Value::Object(personalization)]),
-    );
-    root.insert("from".to_owned(), Value::Object(sender));
-    if let Some(reply_to) = reply_to {
-        root.insert("reply_to".to_owned(), json!({"email": reply_to}));
-    }
-    if let Some(template_id) = template_id {
-        root.insert("template_id".to_owned(), Value::String(template_id.clone()));
-    } else {
-        root.insert(
-            "subject".to_owned(),
-            Value::String(subject.clone().unwrap_or_default()),
-        );
-        let mut content = Vec::new();
-        if let Some(text) = text {
-            content.push(json!({"type": "text/plain", "value": text}));
-        }
-        if let Some(html) = html {
-            content.push(json!({"type": "text/html", "value": html}));
-        }
-        root.insert("content".to_owned(), Value::Array(content));
-    }
-    if config.sandbox_mode {
-        root.insert(
+    let root: Map<String, Value> = [
+        Some((
+            "personalizations".to_owned(),
+            Value::Array(vec![Value::Object(personalization)]),
+        )),
+        Some(("from".to_owned(), Value::Object(sender))),
+        reply_to
+            .as_ref()
+            .map(|reply_to| ("reply_to".to_owned(), json!({"email": reply_to}))),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(content_members)
+    .chain(config.sandbox_mode.then(|| {
+        (
             "mail_settings".to_owned(),
             json!({"sandbox_mode": {"enable": true}}),
-        );
-    }
+        )
+    }))
+    .collect();
     Ok(Value::Object(root))
+}
+
+/// One JSON string member, present only when the value is.
+fn string_entry(key: &str, value: Option<&str>) -> Option<(String, Value)> {
+    value.map(|value| (key.to_owned(), Value::String(value.to_owned())))
 }
 
 #[derive(Debug, Deserialize)]

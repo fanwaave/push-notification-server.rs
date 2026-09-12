@@ -237,8 +237,8 @@ impl TwilioProvider {
         }
 
         let form = build_twilio_form(job, &self.config)?;
-        let mut request = self.client.post(self.messages_url()?).form(&form);
-        request = match &self.config.credentials {
+        let request = self.client.post(self.messages_url()?).form(&form);
+        let request = match &self.config.credentials {
             TwilioCredentials::AuthToken { token } => {
                 request.basic_auth(&self.config.account_sid, Some(token))
             }
@@ -322,28 +322,25 @@ fn build_twilio_form(
         ));
     };
 
-    let mut form = BTreeMap::from([
-        ("To".to_owned(), e164.clone()),
-        ("Body".to_owned(), body.clone()),
-    ]);
-    match &config.sender {
-        TwilioSender::MessagingService { sid } => {
-            form.insert("MessagingServiceSid".to_owned(), sid.clone());
-        }
-        TwilioSender::PhoneNumber { e164 } => {
-            form.insert("From".to_owned(), e164.clone());
-        }
-    }
-    if let Some(url) = &config.status_callback_url {
-        form.insert("StatusCallback".to_owned(), url.as_str().to_owned());
-    }
-    if let Some(validity_period_seconds) = config.validity_period_seconds {
-        form.insert(
-            "ValidityPeriod".to_owned(),
-            validity_period_seconds.to_string(),
-        );
-    }
-    Ok(form)
+    let sender = match &config.sender {
+        TwilioSender::MessagingService { sid } => ("MessagingServiceSid".to_owned(), sid.clone()),
+        TwilioSender::PhoneNumber { e164 } => ("From".to_owned(), e164.clone()),
+    };
+    Ok([
+        Some(("To".to_owned(), e164.clone())),
+        Some(("Body".to_owned(), body.clone())),
+        Some(sender),
+        config
+            .status_callback_url
+            .as_ref()
+            .map(|url| ("StatusCallback".to_owned(), url.as_str().to_owned())),
+        config
+            .validity_period_seconds
+            .map(|seconds| ("ValidityPeriod".to_owned(), seconds.to_string())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
 }
 
 #[derive(Debug, Deserialize)]

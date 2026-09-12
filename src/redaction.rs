@@ -25,16 +25,17 @@ impl std::fmt::Display for TargetFingerprint {
 
 pub fn fingerprint_target(target: &PushTarget) -> TargetFingerprint {
     let (provider, parts) = target.fingerprint_material();
-    let mut hasher = Sha256::new();
-    hasher.update(b"push-target-v1\0");
-    hasher.update(provider.as_bytes());
+    let digest = parts
+        .iter()
+        .fold(
+            Sha256::new()
+                .chain_update(b"push-target-v1\0")
+                .chain_update(provider.as_bytes()),
+            |hasher, part| hasher.chain_update(b"\0").chain_update(part.as_bytes()),
+        )
+        .finalize();
 
-    for part in parts {
-        hasher.update(b"\0");
-        hasher.update(part.as_bytes());
-    }
-
-    let digest = hex::encode(hasher.finalize());
+    let digest = hex::encode(digest);
     TargetFingerprint(format!("{provider}:{}", &digest[..FINGERPRINT_HEX_LENGTH]))
 }
 
@@ -44,10 +45,11 @@ pub fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         return value.to_owned();
     }
 
-    let mut boundary = max_bytes;
-    while boundary > 0 && !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
+    // Index 0 is always a boundary, so the search cannot come up empty.
+    let boundary = (0..=max_bytes)
+        .rev()
+        .find(|&boundary| value.is_char_boundary(boundary))
+        .unwrap_or(0);
 
     value[..boundary].to_owned()
 }

@@ -6,7 +6,7 @@
 //! authenticated internal routes retain the full push and contact surface for
 //! private SDK generation.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::Router;
@@ -146,89 +146,112 @@ fn finalize(mut openapi: OpenApi) -> OpenApi {
     openapi
 }
 
-fn collect_schema_refs(value: &Value, refs: &mut BTreeSet<String>) {
+/// Every `#/components/schemas/<name>` reference reachable inside `value`.
+fn schema_refs(value: &Value) -> BTreeSet<String> {
     match value {
-        Value::Object(object) => {
-            if let Some(reference) = object.get("$ref").and_then(Value::as_str)
-                && let Some(name) = reference.strip_prefix(SCHEMA_REF_PREFIX)
-            {
-                refs.insert(name.to_owned());
-            }
-            for child in object.values() {
-                collect_schema_refs(child, refs);
-            }
-        }
-        Value::Array(items) => {
-            for child in items {
-                collect_schema_refs(child, refs);
-            }
-        }
-        _ => {}
+        Value::Object(object) => object
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|reference| reference.strip_prefix(SCHEMA_REF_PREFIX))
+            .map(str::to_owned)
+            .into_iter()
+            .chain(object.values().flat_map(schema_refs))
+            .collect(),
+        Value::Array(items) => items.iter().flat_map(schema_refs).collect(),
+        _ => BTreeSet::new(),
     }
+}
+
+/// Transitive closure of schema references: `reached` names are already
+/// expanded, `frontier` names are expanded in this step. Names without a
+/// schema stay in the set (the final lookup drops them), and the recursion
+/// terminates because every step only discovers names not seen before.
+fn transitive_schema_refs(
+    reached: BTreeSet<String>,
+    frontier: BTreeSet<String>,
+    all_schemas: &Map<String, Value>,
+) -> BTreeSet<String> {
+    if frontier.is_empty() {
+        return reached;
+    }
+    let discovered: BTreeSet<String> = frontier
+        .iter()
+        .filter_map(|name| all_schemas.get(name))
+        .flat_map(schema_refs)
+        .filter(|name| !reached.contains(name) && !frontier.contains(name))
+        .collect();
+    let reached: BTreeSet<String> = reached.into_iter().chain(frontier).collect();
+    transitive_schema_refs(reached, discovered, all_schemas)
 }
 
 fn reachable_public_schemas(
     paths: &Map<String, Value>,
     all_schemas: &Map<String, Value>,
 ) -> Map<String, Value> {
-    let mut required = BTreeSet::new();
-    collect_schema_refs(&Value::Object(paths.clone()), &mut required);
-
-    let mut pending: VecDeque<String> = required.iter().cloned().collect();
-    let mut expanded = BTreeSet::new();
-    while let Some(name) = pending.pop_front() {
-        if !expanded.insert(name.clone()) {
-            continue;
-        }
-        let Some(schema) = all_schemas.get(&name) else {
-            continue;
-        };
-        let mut nested = BTreeSet::new();
-        collect_schema_refs(schema, &mut nested);
-        for dependency in nested {
-            if required.insert(dependency.clone()) {
-                pending.push_back(dependency);
-            }
-        }
-    }
-
-    required
+    let direct = schema_refs(&Value::Object(paths.clone()));
+    transitive_schema_refs(BTreeSet::new(), direct, all_schemas)
         .into_iter()
         .filter_map(|name| all_schemas.get(&name).cloned().map(|schema| (name, schema)))
         .collect()
 }
 
+/// Build the public document as a new value: only public paths, only the
+/// schemas those paths reach, and a public `info`/scope. The internal
+/// document is never modified.
 fn public_projection(openapi: &OpenApi) -> Result<OpenApi, serde_json::Error> {
-    let mut value = serde_json::to_value(openapi)?;
-    let paths = value["paths"]
-        .as_object_mut()
-        .expect("OpenAPI paths serialize as an object");
-    paths.retain(|path, _| PUBLIC_PATHS.contains(&path.as_str()));
-    let public_paths = paths.clone();
-
-    let all_schemas = value["components"]["schemas"]
+    let internal = serde_json::to_value(openapi)?;
+    let public_paths: Map<String, Value> = internal["paths"]
+        .as_object()
+        .expect("OpenAPI paths serialize as an object")
+        .iter()
+        .filter(|(path, _)| PUBLIC_PATHS.contains(&path.as_str()))
+        .map(|(path, item)| (path.clone(), item.clone()))
+        .collect();
+    let all_schemas = internal["components"]["schemas"]
         .as_object()
         .cloned()
         .unwrap_or_default();
     let schemas = reachable_public_schemas(&public_paths, &all_schemas);
-    value["components"] = serde_json::json!({ "schemas": schemas });
-    value["info"]["title"] = Value::String("push-notification-server API (public)".to_owned());
-    value["info"]
-        .as_object_mut()
+    let info: Map<String, Value> = internal["info"]
+        .as_object()
         .expect("OpenAPI info object")
-        .remove("contact");
-    value["info"]
-        .as_object_mut()
-        .expect("OpenAPI info object")
-        .remove("license");
-    value["x-dd-contract-scope"] = Value::String("public".to_owned());
-    serde_json::from_value(value)
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "title" | "contact" | "license"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .chain([(
+            "title".to_owned(),
+            Value::String("push-notification-server API (public)".to_owned()),
+        )])
+        .collect();
+    let projected: Map<String, Value> = internal
+        .as_object()
+        .expect("OpenAPI document serializes as an object")
+        .iter()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "paths" | "components" | "info" | "x-dd-contract-scope"
+            )
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .chain([
+            ("paths".to_owned(), Value::Object(public_paths)),
+            (
+                "components".to_owned(),
+                serde_json::json!({ "schemas": schemas }),
+            ),
+            ("info".to_owned(), Value::Object(info)),
+            (
+                "x-dd-contract-scope".to_owned(),
+                Value::String("public".to_owned()),
+            ),
+        ])
+        .collect();
+    serde_json::from_value(Value::Object(projected))
 }
 
 pub fn canonical_json(openapi: &OpenApi) -> Result<String, serde_json::Error> {
-    let mut json = serde_json::to_string_pretty(openapi)?;
-    json.push('\n');
-    Ok(json)
+    serde_json::to_string_pretty(openapi).map(|json| json + "\n")
 }
 
 fn openapi_response(bytes: Bytes) -> Response {

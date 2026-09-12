@@ -103,20 +103,26 @@ fn configure_twilio(
     let account_sid = account_sid.ok_or(ContactRuntimeConfigError::IncompleteProvider("twilio"))?;
     let credentials = twilio_credentials(auth_token, api_key_sid, api_key_secret)?;
     let sender = twilio_sender(messaging_service_sid, from_number)?;
-    let mut config = TwilioConfig::new(account_sid, credentials, sender)?;
-    if let Some(callback) = status_callback {
-        let callback = Url::parse(&callback)
-            .map_err(|_| ContactRuntimeConfigError::InvalidTwilioStatusCallbackUrl)?;
-        config = config.with_status_callback_url(callback)?;
-    }
-    if let Some(validity_period) = validity_period {
-        let validity_period = validity_period
-            .parse::<u32>()
-            .ok()
-            .filter(|value| *value > 0)
-            .ok_or(ContactRuntimeConfigError::InvalidTwilioValidityPeriod)?;
-        config = config.with_validity_period_seconds(validity_period)?;
-    }
+    let config = TwilioConfig::new(account_sid, credentials, sender)?;
+    let config = match status_callback {
+        Some(callback) => {
+            let callback = Url::parse(&callback)
+                .map_err(|_| ContactRuntimeConfigError::InvalidTwilioStatusCallbackUrl)?;
+            config.with_status_callback_url(callback)?
+        }
+        None => config,
+    };
+    let config = match validity_period {
+        Some(validity_period) => {
+            let validity_period = validity_period
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(ContactRuntimeConfigError::InvalidTwilioValidityPeriod)?;
+            config.with_validity_period_seconds(validity_period)?
+        }
+        None => config,
+    };
     let provider = TwilioProvider::new(config)?;
     Ok(registry.with_provider(Arc::new(provider)))
 }

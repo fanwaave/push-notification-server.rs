@@ -55,27 +55,36 @@ pub enum ContactValidationError {
 }
 
 pub fn validate_contact_job(job: &ContactJob) -> Result<(), Vec<ContactValidationError>> {
-    let mut errors = Vec::new();
-    validate_identifier("job_id", &job.job_id, MAX_ID_BYTES, &mut errors);
-    validate_identifier("tenant_id", &job.tenant_id, MAX_ID_BYTES, &mut errors);
-    validate_identifier(
-        "application_id",
-        &job.application_id,
-        MAX_ID_BYTES,
-        &mut errors,
-    );
-    validate_identifier(
-        "idempotency_key",
-        &job.idempotency_key,
-        MAX_IDEMPOTENCY_KEY_BYTES,
-        &mut errors,
-    );
+    let errors = identifier_errors("job_id", &job.job_id, MAX_ID_BYTES)
+        .into_iter()
+        .chain(identifier_errors("tenant_id", &job.tenant_id, MAX_ID_BYTES))
+        .chain(identifier_errors(
+            "application_id",
+            &job.application_id,
+            MAX_ID_BYTES,
+        ))
+        .chain(identifier_errors(
+            "idempotency_key",
+            &job.idempotency_key,
+            MAX_IDEMPOTENCY_KEY_BYTES,
+        ))
+        .chain(
+            (job.provider != job.target.provider() || job.provider != job.content.provider())
+                .then_some(ContactValidationError::ProviderChannelMismatch),
+        )
+        .chain(channel_errors(&job.target, &job.content))
+        .collect::<Vec<_>>();
 
-    if job.provider != job.target.provider() || job.provider != job.content.provider() {
-        errors.push(ContactValidationError::ProviderChannelMismatch);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
+}
 
-    match (&job.target, &job.content) {
+/// Channel-specific issues for one target/content pair, in report order.
+fn channel_errors(target: &ContactTarget, content: &ContactContent) -> Vec<ContactValidationError> {
+    match (target, content) {
         (
             ContactTarget::Email { address, name },
             ContactContent::Email {
@@ -86,136 +95,129 @@ pub fn validate_contact_job(job: &ContactJob) -> Result<(), Vec<ContactValidatio
                 dynamic_template_data,
                 reply_to,
             },
-        ) => {
-            if !valid_email_address(address) {
-                errors.push(ContactValidationError::InvalidEmailAddress);
-            }
-            validate_optional_length(
-                "target.email.name",
-                name.as_deref(),
-                MAX_EMAIL_NAME_BYTES,
-                &mut errors,
-            );
-            if name.as_deref().is_some_and(contains_control_characters) {
-                errors.push(ContactValidationError::InvalidCharacters {
+        ) => [
+            (!valid_email_address(address)).then_some(ContactValidationError::InvalidEmailAddress),
+            optional_length_error("target.email.name", name.as_deref(), MAX_EMAIL_NAME_BYTES),
+            name.as_deref()
+                .is_some_and(contains_control_characters)
+                .then_some(ContactValidationError::InvalidCharacters {
                     field: "target.email.name",
-                });
-            }
-            if let Some(reply_to) = reply_to
-                && !valid_email_address(reply_to)
-            {
-                errors.push(ContactValidationError::InvalidEmailAddress);
-            }
-            validate_email_content(
-                subject.as_deref(),
-                text.as_deref(),
-                html.as_deref(),
-                template_id.as_deref(),
-                dynamic_template_data,
-                &mut errors,
-            );
-        }
-        (ContactTarget::Sms { e164 }, ContactContent::Sms { body }) => {
-            if !valid_e164(e164) {
-                errors.push(ContactValidationError::InvalidE164);
-            }
-            if body.trim().is_empty() {
-                errors.push(ContactValidationError::Required {
+                }),
+            reply_to
+                .as_deref()
+                .is_some_and(|reply_to| !valid_email_address(reply_to))
+                .then_some(ContactValidationError::InvalidEmailAddress),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(email_content_errors(
+            subject.as_deref(),
+            text.as_deref(),
+            html.as_deref(),
+            template_id.as_deref(),
+            dynamic_template_data,
+        ))
+        .collect(),
+        (ContactTarget::Sms { e164 }, ContactContent::Sms { body }) => [
+            (!valid_e164(e164)).then_some(ContactValidationError::InvalidE164),
+            body.trim()
+                .is_empty()
+                .then_some(ContactValidationError::Required {
                     field: "content.body",
-                });
-            }
-            if body.chars().count() > MAX_SMS_CHARACTERS {
-                errors.push(ContactValidationError::SmsTooLong {
+                }),
+            (body.chars().count() > MAX_SMS_CHARACTERS).then_some(
+                ContactValidationError::SmsTooLong {
                     max_characters: MAX_SMS_CHARACTERS,
-                });
-            }
-            if body.chars().any(|character| character == '\0') {
-                errors.push(ContactValidationError::InvalidCharacters {
+                },
+            ),
+            body.chars().any(|character| character == '\0').then_some(
+                ContactValidationError::InvalidCharacters {
                     field: "content.body",
-                });
-            }
-        }
-        _ => errors.push(ContactValidationError::ProviderChannelMismatch),
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
+                },
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        _ => vec![ContactValidationError::ProviderChannelMismatch],
     }
 }
 
-fn validate_email_content(
+fn email_content_errors(
     subject: Option<&str>,
     text: Option<&str>,
     html: Option<&str>,
     template_id: Option<&str>,
     dynamic_template_data: &std::collections::BTreeMap<String, serde_json::Value>,
-    errors: &mut Vec<ContactValidationError>,
-) {
-    let has_template = template_id.is_some_and(|value| !value.trim().is_empty());
+) -> Vec<ContactValidationError> {
     let has_subject = subject.is_some_and(|value| !value.trim().is_empty());
     let has_text = text.is_some_and(|value| !value.trim().is_empty());
     let has_html = html.is_some_and(|value| !value.trim().is_empty());
 
-    if has_template {
-        if has_subject || has_text || has_html {
-            errors.push(ContactValidationError::InvalidEmailContentMode);
-        }
-        let template_id = template_id.expect("checked template ID");
-        if template_id.len() > MAX_TEMPLATE_ID_BYTES
-            || !template_id.starts_with("d-")
-            || template_id
-                .chars()
-                .any(|character| !(character.is_ascii_alphanumeric() || character == '-'))
-        {
-            errors.push(ContactValidationError::InvalidTemplateId);
-        }
-    } else {
-        if !has_subject || (!has_text && !has_html) {
-            errors.push(ContactValidationError::InvalidEmailContentMode);
-        }
-        if !dynamic_template_data.is_empty() {
-            errors.push(ContactValidationError::TemplateDataWithoutTemplate);
-        }
-    }
+    let mode_errors = match template_id.filter(|value| !value.trim().is_empty()) {
+        Some(template_id) => [
+            (has_subject || has_text || has_html)
+                .then_some(ContactValidationError::InvalidEmailContentMode),
+            (!valid_template_id(template_id)).then_some(ContactValidationError::InvalidTemplateId),
+        ],
+        None => [
+            (!has_subject || (!has_text && !has_html))
+                .then_some(ContactValidationError::InvalidEmailContentMode),
+            (!dynamic_template_data.is_empty())
+                .then_some(ContactValidationError::TemplateDataWithoutTemplate),
+        ],
+    };
 
-    validate_optional_length("content.subject", subject, MAX_EMAIL_SUBJECT_BYTES, errors);
-    if subject.is_some_and(contains_control_characters) {
-        errors.push(ContactValidationError::InvalidCharacters {
-            field: "content.subject",
-        });
-    }
-    validate_optional_length("content.text", text, MAX_EMAIL_BODY_BYTES, errors);
-    validate_optional_length("content.html", html, MAX_EMAIL_BODY_BYTES, errors);
-    if to_vec(dynamic_template_data)
-        .map(|encoded| encoded.len() > MAX_TEMPLATE_DATA_BYTES)
-        .unwrap_or(true)
-    {
-        errors.push(ContactValidationError::TemplateDataTooLarge {
-            max_bytes: MAX_TEMPLATE_DATA_BYTES,
-        });
-    }
+    mode_errors
+        .into_iter()
+        .chain([
+            optional_length_error("content.subject", subject, MAX_EMAIL_SUBJECT_BYTES),
+            subject.is_some_and(contains_control_characters).then_some(
+                ContactValidationError::InvalidCharacters {
+                    field: "content.subject",
+                },
+            ),
+            optional_length_error("content.text", text, MAX_EMAIL_BODY_BYTES),
+            optional_length_error("content.html", html, MAX_EMAIL_BODY_BYTES),
+            to_vec(dynamic_template_data)
+                .map(|encoded| encoded.len() > MAX_TEMPLATE_DATA_BYTES)
+                .unwrap_or(true)
+                .then_some(ContactValidationError::TemplateDataTooLarge {
+                    max_bytes: MAX_TEMPLATE_DATA_BYTES,
+                }),
+        ])
+        .flatten()
+        .collect()
 }
 
-fn validate_identifier(
+fn valid_template_id(template_id: &str) -> bool {
+    template_id.len() <= MAX_TEMPLATE_ID_BYTES
+        && template_id.starts_with("d-")
+        && template_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
+fn identifier_errors(
     field: &'static str,
     value: &str,
     max_bytes: usize,
-    errors: &mut Vec<ContactValidationError>,
-) {
+) -> Vec<ContactValidationError> {
     if value.is_empty() {
-        errors.push(ContactValidationError::Required { field });
-        return;
+        return vec![ContactValidationError::Required { field }];
     }
-    if value.len() > max_bytes {
-        errors.push(ContactValidationError::TooLong { field, max_bytes });
-    }
-    if value.chars().any(|character| {
-        !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
-    }) {
-        errors.push(ContactValidationError::InvalidCharacters { field });
-    }
+    [
+        (value.len() > max_bytes).then_some(ContactValidationError::TooLong { field, max_bytes }),
+        value
+            .chars()
+            .any(|character| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
+            })
+            .then_some(ContactValidationError::InvalidCharacters { field }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 // Subjects and display names are header material at the provider; CR/LF or any
@@ -225,15 +227,14 @@ fn contains_control_characters(value: &str) -> bool {
     value.chars().any(char::is_control)
 }
 
-fn validate_optional_length(
+fn optional_length_error(
     field: &'static str,
     value: Option<&str>,
     max_bytes: usize,
-    errors: &mut Vec<ContactValidationError>,
-) {
-    if value.is_some_and(|value| value.len() > max_bytes) {
-        errors.push(ContactValidationError::TooLong { field, max_bytes });
-    }
+) -> Option<ContactValidationError> {
+    value
+        .is_some_and(|value| value.len() > max_bytes)
+        .then_some(ContactValidationError::TooLong { field, max_bytes })
 }
 
 pub fn valid_email_address(value: &str) -> bool {
@@ -246,14 +247,10 @@ pub fn valid_email_address(value: &str) -> bool {
     {
         return false;
     }
-    let mut parts = value.split('@');
-    let Some(local) = parts.next() else {
+    let Some((local, domain)) = value.split_once('@') else {
         return false;
     };
-    let Some(domain) = parts.next() else {
-        return false;
-    };
-    if parts.next().is_some()
+    if domain.contains('@')
         || local.is_empty()
         || local.len() > 64
         || local.starts_with('.')
