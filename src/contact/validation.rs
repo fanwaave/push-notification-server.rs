@@ -154,7 +154,10 @@ fn email_content_errors(
     let has_text = text.is_some_and(|value| !value.trim().is_empty());
     let has_html = html.is_some_and(|value| !value.trim().is_empty());
 
-    let mode_errors = match template_id.filter(|value| !value.trim().is_empty()) {
+    // Provider request construction selects template mode whenever the field is
+    // present. Validate that same state so blank IDs cannot enter explicit mode
+    // here and then become template requests at the delivery boundary.
+    let mode_errors = match template_id {
         Some(template_id) => [
             (has_subject || has_text || has_html)
                 .then_some(ContactValidationError::InvalidEmailContentMode),
@@ -357,6 +360,22 @@ mod tests {
             reply_to: None,
         }))
         .expect("template email");
+    }
+
+    #[test]
+    fn rejects_present_but_blank_template_ids_before_provider_dispatch() {
+        for template_id in ["", " ", "\t"] {
+            let errors = validate_contact_job(&email_job(ContactContent::Email {
+                subject: Some("Hello".to_owned()),
+                text: Some("Body".to_owned()),
+                html: None,
+                template_id: Some(template_id.to_owned()),
+                dynamic_template_data: BTreeMap::new(),
+                reply_to: None,
+            }))
+            .expect_err("a present template ID must satisfy the template contract");
+            assert!(errors.contains(&ContactValidationError::InvalidTemplateId));
+        }
     }
 
     #[test]

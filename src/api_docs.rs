@@ -388,6 +388,38 @@ mod tests {
     }
 
     #[test]
+    fn public_schema_closure_handles_cycles_arrays_and_missing_references() {
+        let paths = serde_json::json!({
+            "/health": {"response": {"$ref": "#/components/schemas/A"}}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let schemas = serde_json::json!({
+            "A": {"allOf": [
+                {"$ref": "#/components/schemas/B"},
+                {"$ref": "#/components/schemas/Missing"}
+            ]},
+            "B": {"properties": {"items": {"type": "array", "items": {
+                "$ref": "#/components/schemas/C"
+            }}}},
+            "C": {"$ref": "#/components/schemas/A"},
+            "Private": {"type": "string"}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let selected = reachable_public_schemas(&paths, &schemas);
+        assert_eq!(
+            selected.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["A", "B", "C"]
+        );
+        for name in ["A", "B", "C"] {
+            assert_eq!(selected[name], schemas[name]);
+        }
+    }
+
+    #[test]
     fn canonical_contract_exports_are_deterministic() {
         let internal = openapi_document();
         let first = canonical_json(&internal).expect("first export");
