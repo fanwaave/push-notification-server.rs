@@ -665,6 +665,43 @@ mod tests {
         assert!(claims.get("exp").is_none());
     }
 
+    #[test]
+    fn signs_provider_token_with_the_configured_crypto_backend() {
+        use base64::Engine as _;
+        use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+        use p256::elliptic_curve::rand_core::OsRng;
+        use p256::pkcs8::EncodePrivateKey;
+
+        // Generate test-only key material in memory. Nothing is sent to APNs,
+        // persisted, or included in assertion diagnostics.
+        let secret = p256::SecretKey::random(&mut OsRng);
+        let pem = secret
+            .to_pkcs8_pem(Default::default())
+            .expect("encode test key");
+        let config = ApnsConfig::new(
+            "KEY1234567",
+            "TEAM123456",
+            "com.example.app",
+            pem.as_str(),
+            ProviderEnvironment::Sandbox,
+        )
+        .expect("configure test signing key");
+        let token = encode_provider_token(&config, 1_000).expect("sign provider token");
+        let parts = token.split('.').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3);
+        let decoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let signature = Signature::from_slice(&decoder.decode(parts[2]).expect("decode signature"))
+            .expect("parse signature");
+        VerifyingKey::from(secret.public_key())
+            .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
+            .expect("verify provider signature independently");
+        let claims: Value =
+            serde_json::from_slice(&decoder.decode(parts[1]).expect("decode claims"))
+                .expect("parse claims");
+        assert_eq!(claims["iss"], "TEAM123456");
+        assert_eq!(claims["iat"], 1_000);
+    }
+
     #[tokio::test]
     async fn cached_provider_token_is_reused() {
         let config = ApnsConfig::for_test(

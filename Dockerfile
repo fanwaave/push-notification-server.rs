@@ -20,7 +20,10 @@ RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid 10001 --no-create-home \
       --shell /usr/sbin/nologin app \
     && apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates libssl3 \
+    && apt-get install --yes --no-install-recommends ca-certificates libssl3 libpcre2-8-0 \
+    # The pinned base contains 10.42-1. Require the Debian security fix for
+    # CVE-2026-86145 and CVE-2026-89161 even if an APT mirror is stale.
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.42-1+deb12u1' \
     && rm -rf /var/lib/apt/lists/*
 
 LABEL org.opencontainers.image.source="https://github.com/fanwaave/push-notification-server.rs" \
