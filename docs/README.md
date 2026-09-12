@@ -12,6 +12,10 @@ This directory documents the contracts, provider adapters, deployment boundaries
 - [NATS ingestion v1](nats-ingestion-v1.md) — durable push-job ingestion, Ack/NAK, retries, and dead letters.
 - [Contact delivery v1](contact-delivery-v1.md) — separate email/SMS `ContactJob` and `ContactOutcome` contracts.
 
+## Engineering conventions
+
+- [Functional style and immutability](FUNCTIONAL-STYLE.md) — build values instead of mutating them; the `HOT-PATH (imperative by design)` comment contract for deliberate exceptions.
+
 ## Provider-specific references
 
 - [APNs](apns.md)

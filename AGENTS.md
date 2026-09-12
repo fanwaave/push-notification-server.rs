@@ -20,6 +20,7 @@ The ORESoftware repository remains an independent historical/source copy. Do not
 - After resolving conflicts, scan the complete worktree for conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) and rerun every affected contract.
 - Never force-push shared branches, rewrite reviewed history, or bypass exact-head checks.
 - Never commit secrets, production device tokens, Web Push capability URLs, provider private keys, recipient addresses, or phone numbers.
+- Build values, don't mutate them: functions return new values instead of filling `&mut` parameters or caller-owned collections. Deliberate exceptions on hot paths (token caches under a lock, pinned futures in `select!`) carry a `HOT-PATH (imperative by design)` comment with the reason. See [`docs/FUNCTIONAL-STYLE.md`](./docs/FUNCTIONAL-STYLE.md).
 
 ## Runtime and release boundary
 

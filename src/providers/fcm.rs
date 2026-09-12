@@ -181,6 +181,11 @@ impl FcmProvider {
         }
     }
 
+    // HOT-PATH (imperative by design): the OAuth token cache is consulted on every
+    // FCM send and refreshed in place under the mutex so concurrent senders share
+    // one token mint instead of each minting (a signed JWT plus a network round
+    // trip) their own; the mutation is confined to the guarded `Option` slot in
+    // this method, and callers receive an owned, immutable `String` token.
     async fn access_token(&self) -> Result<String, ProviderError> {
         // Hold the lock through refresh so concurrent callers share one token mint.
         let mut guard = self.token.lock().await;
@@ -382,12 +387,13 @@ impl FcmProvider {
         let response_json = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
 
         if status.is_success() {
-            let mut outcome = PushOutcome::accepted(job);
-            outcome.provider_code = response_json
-                .get("name")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            return Ok(outcome);
+            return Ok(PushOutcome {
+                provider_code: response_json
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                ..PushOutcome::accepted(job)
+            });
         }
 
         let classified = classify_fcm_response(status.as_u16(), &response_json);
@@ -463,58 +469,66 @@ struct FcmOauthError {
 }
 
 fn build_send_body(job: &PushJob, device_token: &str) -> Value {
-    let mut message = Map::new();
-    message.insert("token".to_owned(), Value::String(device_token.to_owned()));
+    let notification: Map<String, Value> = [
+        string_entry("title", job.notification.title.as_deref()),
+        string_entry("body", job.notification.body.as_deref()),
+        string_entry("image", job.notification.image_url.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    let mut notification = Map::new();
-    if let Some(title) = &job.notification.title {
-        notification.insert("title".to_owned(), Value::String(title.clone()));
-    }
-    if let Some(body) = &job.notification.body {
-        notification.insert("body".to_owned(), Value::String(body.clone()));
-    }
-    if let Some(image) = &job.notification.image_url {
-        notification.insert("image".to_owned(), Value::String(image.clone()));
-    }
-    if !notification.is_empty() {
-        message.insert("notification".to_owned(), Value::Object(notification));
-    }
-
-    if !job.notification.data.is_empty() {
-        let data = job
-            .notification
+    let data = (!job.notification.data.is_empty()).then(|| {
+        job.notification
             .data
             .iter()
             .map(|(key, value)| (key.clone(), Value::String(stringify_value(value))))
-            .collect::<Map<String, Value>>();
-        message.insert("data".to_owned(), Value::Object(data));
-    }
+            .collect::<Map<String, Value>>()
+    });
 
-    let mut android = Map::new();
-    android.insert(
-        "priority".to_owned(),
-        Value::String(match job.options.priority {
-            PushPriority::Normal => "NORMAL".to_owned(),
-            PushPriority::High => "HIGH".to_owned(),
-        }),
-    );
-    if let Some(ttl_seconds) = job.options.ttl_seconds {
-        android.insert("ttl".to_owned(), Value::String(format!("{ttl_seconds}s")));
-    }
-    if let Some(collapse_key) = &job.options.collapse_key {
-        android.insert(
-            "collapse_key".to_owned(),
-            Value::String(collapse_key.clone()),
-        );
-    }
-    message.insert("android".to_owned(), Value::Object(android));
+    let android: Map<String, Value> = [
+        Some((
+            "priority".to_owned(),
+            Value::String(match job.options.priority {
+                PushPriority::Normal => "NORMAL".to_owned(),
+                PushPriority::High => "HIGH".to_owned(),
+            }),
+        )),
+        job.options
+            .ttl_seconds
+            .map(|ttl_seconds| ("ttl".to_owned(), Value::String(format!("{ttl_seconds}s")))),
+        string_entry("collapse_key", job.options.collapse_key.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    let mut request = Map::new();
-    request.insert("message".to_owned(), Value::Object(message));
-    if job.options.dry_run {
-        request.insert("validate_only".to_owned(), Value::Bool(true));
-    }
+    let message: Map<String, Value> = [
+        string_entry("token", Some(device_token)),
+        (!notification.is_empty())
+            .then(|| ("notification".to_owned(), Value::Object(notification))),
+        data.map(|data| ("data".to_owned(), Value::Object(data))),
+        Some(("android".to_owned(), Value::Object(android))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let request: Map<String, Value> = [
+        Some(("message".to_owned(), Value::Object(message))),
+        job.options
+            .dry_run
+            .then_some(("validate_only".to_owned(), Value::Bool(true))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Value::Object(request)
+}
+
+/// One JSON string member, present only when the value is.
+fn string_entry(key: &str, value: Option<&str>) -> Option<(String, Value)> {
+    value.map(|value| (key.to_owned(), Value::String(value.to_owned())))
 }
 
 fn stringify_value(value: &Value) -> String {

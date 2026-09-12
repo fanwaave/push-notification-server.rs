@@ -54,14 +54,16 @@ impl ContactTarget {
             Self::Email { address, .. } => ("email", vec![address.as_str()]),
             Self::Sms { e164 } => ("sms", vec![e164.as_str()]),
         };
-        let mut hasher = Sha256::new();
-        hasher.update(b"contact-target-v1\0");
-        hasher.update(provider.as_bytes());
-        for part in parts {
-            hasher.update(b"\0");
-            hasher.update(part.as_bytes());
-        }
-        let digest = hex::encode(hasher.finalize());
+        let digest = parts
+            .iter()
+            .fold(
+                Sha256::new()
+                    .chain_update(b"contact-target-v1\0")
+                    .chain_update(provider.as_bytes()),
+                |hasher, part| hasher.chain_update(b"\0").chain_update(part.as_bytes()),
+            )
+            .finalize();
+        let digest = hex::encode(digest);
         ContactTargetFingerprint(format!("{provider}:{}", &digest[..FINGERPRINT_HEX_LENGTH]))
     }
 }

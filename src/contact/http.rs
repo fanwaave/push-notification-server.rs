@@ -7,6 +7,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -148,10 +149,10 @@ async fn submit_batch(
         );
     }
 
-    let mut outcomes = Vec::with_capacity(request.jobs.len());
-    for job in &request.jobs {
-        outcomes.push(dispatch_job(&state.registry, job).await);
-    }
+    let outcomes = stream::iter(&request.jobs)
+        .then(|job| dispatch_job(&state.registry, job))
+        .collect::<Vec<_>>()
+        .await;
     let accepted = outcomes
         .iter()
         .filter(|outcome| outcome.class == ContactOutcomeClass::Accepted)
