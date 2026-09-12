@@ -59,3 +59,7 @@ The cutover must:
 - verify GitHub App, Actions, package, environment, secret, webhook, and release permissions in Fanwaave;
 - record exact source, image, GitOps, and live pod identities;
 - preserve the ORESoftware repository as an independent historical/source copy unless a separate reviewed retirement decision is approved.
+
+## Superseded plan (kept for the record)
+
+An earlier draft of this document planned a direct GitHub ownership transfer of `ORESoftware/push-notification-server.rs` to the `fanwaave` organization (merge the preparation PR, confirm the destination is unused, transfer, verify `main`/tags/releases/issues moved). That plan was not executed: the service was published by copying the branch and tag graph instead, as recorded above. Do not re-run the transfer procedure against the already-populated destination.
