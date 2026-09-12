@@ -1,5 +1,13 @@
-use std::{env, fmt, net::SocketAddr};
+use std::{
+    env, fmt,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
+use flags2env::{
+    BundledFlags2Env,
+    env_map::{EnvBindingSpec, EnvMap, EnvValueKind, resolve_typed_bindings},
+};
 use push_notification_server::{
     ApiState, ContactApiState, NatsConfig, application_router, canonical_json,
     contact_registry_from_env, openapi_document, provider_registry_from_env,
@@ -11,6 +19,12 @@ use tracing_subscriber::EnvFilter;
 enum OpenApiScope {
     Internal,
     Public,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeArgs {
+    merged_env: EnvMap,
+    export_openapi: Option<OpenApiScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +48,10 @@ where
     I: IntoIterator<Item = String>,
 {
     let args = args.into_iter().collect::<Vec<_>>();
-    if let Some(scope) = export_openapi_scope(&args)? {
+    let contract_path = flags_contract_path();
+    let runtime = parse_runtime_args(&args, env::vars().collect(), &contract_path)?;
+
+    if let Some(scope) = runtime.export_openapi {
         let openapi = match scope {
             OpenApiScope::Internal => openapi_document(),
             OpenApiScope::Public => public_openapi_document()?,
@@ -51,7 +68,7 @@ where
         )
         .init();
 
-    let address = bind_address()?;
+    let address = bind_address(&runtime.merged_env)?;
     let registry = provider_registry_from_env()?;
     let contact_registry = contact_registry_from_env()?;
     let authenticator = request_authenticator_from_env()?;
@@ -82,33 +99,106 @@ where
     Ok(())
 }
 
-fn export_openapi_scope(args: &[String]) -> Result<Option<OpenApiScope>, ArgumentError> {
-    let mut values = args.iter().filter_map(|argument| {
-        argument
-            .strip_prefix("--export-openapi=")
-            .map(str::to_owned)
-    });
+fn flags_contract_path() -> PathBuf {
+    env::var_os("FLAGS2ENV_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".cli-flags.toml"))
+}
 
-    let Some(value) = values.next() else {
-        return Ok(None);
-    };
-    if values.next().is_some() {
-        return Err(ArgumentError(
-            "--export-openapi may be specified only once".to_owned(),
-        ));
+fn parse_runtime_args(
+    args: &[String],
+    ambient_env: EnvMap,
+    config_path: &Path,
+) -> Result<RuntimeArgs, ArgumentError> {
+    let config_path = config_path
+        .to_str()
+        .ok_or_else(|| ArgumentError(".cli-flags.toml path is not valid UTF-8".to_owned()))?;
+    let parser = BundledFlags2Env::new();
+    parser.audit_config(Some(config_path)).map_err(|error| {
+        ArgumentError(format!("flags-2-env configuration audit failed: {error}"))
+    })?;
+    let parsed = parser
+        .parse_structured(args, Some(config_path))
+        .map_err(|error| ArgumentError(format!("flags-2-env parse failed: {error}")))?;
+
+    if !parsed.unknown_options.is_empty() {
+        return Err(ArgumentError(format!(
+            "unknown command-line option(s): {}",
+            parsed.unknown_options.join(", ")
+        )));
+    }
+    if !parsed.errors.is_empty() {
+        return Err(ArgumentError(format!(
+            "invalid command-line value(s): {}",
+            parsed.errors.join("; ")
+        )));
+    }
+    if !parsed.command.is_empty() {
+        return Err(ArgumentError(format!(
+            "unexpected command or positional argument: {}",
+            parsed.command
+        )));
     }
 
-    match value.as_str() {
-        "internal" => Ok(Some(OpenApiScope::Internal)),
-        "public" => Ok(Some(OpenApiScope::Public)),
+    let mut merged_env = ambient_env;
+    merged_env.extend(parsed.provided_flags);
+    validate_runtime_env(&merged_env)?;
+
+    let export_openapi = merged_env
+        .get("FANWAAVE_EXPORT_OPENAPI")
+        .map(String::as_str)
+        .map(parse_openapi_scope)
+        .transpose()?;
+
+    Ok(RuntimeArgs {
+        merged_env,
+        export_openapi,
+    })
+}
+
+fn validate_runtime_env(runtime_env: &EnvMap) -> Result<(), ArgumentError> {
+    let specs = [
+        EnvBindingSpec::optional("host", "HOST", EnvValueKind::String),
+        EnvBindingSpec::optional("port", "PORT", EnvValueKind::Integer),
+        EnvBindingSpec::optional(
+            "export_openapi",
+            "FANWAAVE_EXPORT_OPENAPI",
+            EnvValueKind::String,
+        ),
+    ];
+
+    resolve_typed_bindings(runtime_env, &specs)
+        .map(|_| ())
+        .map_err(|diagnostics| {
+            ArgumentError(format!(
+                "runtime environment preflight failed: {}",
+                diagnostics
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ))
+        })
+}
+
+fn parse_openapi_scope(value: &str) -> Result<OpenApiScope, ArgumentError> {
+    match value {
+        "internal" => Ok(OpenApiScope::Internal),
+        "public" => Ok(OpenApiScope::Public),
         other => Err(ArgumentError(format!("unsupported OpenAPI scope: {other}"))),
     }
 }
 
-fn bind_address() -> Result<SocketAddr, std::net::AddrParseError> {
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_owned());
-    let port = env::var("PORT").unwrap_or_else(|_| "8121".to_owned());
-    parse_bind_address(&host, &port)
+fn bind_address(runtime_env: &EnvMap) -> Result<SocketAddr, std::net::AddrParseError> {
+    let host = runtime_env
+        .get("HOST")
+        .map(String::as_str)
+        .unwrap_or("0.0.0.0");
+    let port = runtime_env
+        .get("PORT")
+        .map(String::as_str)
+        .unwrap_or("8121");
+    parse_bind_address(host, port)
 }
 
 fn parse_bind_address(host: &str, port: &str) -> Result<SocketAddr, std::net::AddrParseError> {
@@ -147,35 +237,104 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn export_scope_is_explicit_and_unambiguous() {
-        let public = vec!["server".to_owned(), "--export-openapi=public".to_owned()];
-        assert_eq!(
-            export_openapi_scope(&public).expect("public scope"),
-            Some(OpenApiScope::Public)
-        );
-
-        let internal = vec!["server".to_owned(), "--export-openapi=internal".to_owned()];
-        assert_eq!(
-            export_openapi_scope(&internal).expect("internal scope"),
-            Some(OpenApiScope::Internal)
-        );
-
-        let normal = vec!["server".to_owned()];
-        assert_eq!(export_openapi_scope(&normal).expect("normal run"), None);
+    fn flags_contract() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".cli-flags.toml")
     }
 
     #[test]
-    fn export_scope_rejects_unknown_or_duplicate_values() {
-        let unknown = vec!["server".to_owned(), "--export-openapi=partner".to_owned()];
-        assert!(export_openapi_scope(&unknown).is_err());
+    fn export_scope_is_owned_by_flags_2_env() {
+        let runtime = parse_runtime_args(
+            &["server".to_owned(), "--export-openapi=public".to_owned()],
+            EnvMap::new(),
+            &flags_contract(),
+        )
+        .expect("public scope");
+        assert_eq!(runtime.export_openapi, Some(OpenApiScope::Public));
 
-        let duplicate = vec![
-            "server".to_owned(),
-            "--export-openapi=public".to_owned(),
-            "--export-openapi=internal".to_owned(),
-        ];
-        assert!(export_openapi_scope(&duplicate).is_err());
+        let runtime = parse_runtime_args(
+            &["server".to_owned(), "--export-openapi=internal".to_owned()],
+            EnvMap::new(),
+            &flags_contract(),
+        )
+        .expect("internal scope");
+        assert_eq!(runtime.export_openapi, Some(OpenApiScope::Internal));
+    }
+
+    #[test]
+    fn rejects_unknown_flags_and_unsupported_openapi_scope() {
+        assert!(
+            parse_runtime_args(
+                &["server".to_owned(), "--not-declared=yes".to_owned()],
+                EnvMap::new(),
+                &flags_contract(),
+            )
+            .is_err()
+        );
+
+        assert!(
+            parse_runtime_args(
+                &["server".to_owned(), "--export-openapi=partner".to_owned()],
+                EnvMap::new(),
+                &flags_contract(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_ambient_port_before_socket_startup() {
+        let error = parse_runtime_args(
+            &["server".to_owned()],
+            EnvMap::from([("PORT".to_owned(), "08121".to_owned())]),
+            &flags_contract(),
+        )
+        .expect_err("noncanonical integer must fail closed");
+
+        assert!(error.to_string().contains("ENV_PARSE"));
+        assert!(error.to_string().contains("PORT"));
+        assert!(!error.to_string().contains("08121"));
+    }
+
+    #[test]
+    fn argv_overrides_ambient_env_without_mutating_process_env() {
+        let before = std::env::var_os("PORT");
+        let runtime = parse_runtime_args(
+            &["server".to_owned(), "--port=9001".to_owned()],
+            EnvMap::from([
+                ("HOST".to_owned(), "127.0.0.1".to_owned()),
+                ("PORT".to_owned(), "9000".to_owned()),
+            ]),
+            &flags_contract(),
+        )
+        .expect("valid runtime args");
+
+        assert_eq!(
+            runtime.merged_env.get("PORT").map(String::as_str),
+            Some("9001")
+        );
+        assert_eq!(
+            bind_address(&runtime.merged_env).expect("valid bind"),
+            "127.0.0.1:9001".parse().expect("socket address")
+        );
+        assert_eq!(std::env::var_os("PORT"), before);
+    }
+
+    #[test]
+    fn ambient_env_beats_contract_default_when_argv_is_silent() {
+        let runtime = parse_runtime_args(
+            &["server".to_owned()],
+            EnvMap::from([
+                ("HOST".to_owned(), "127.0.0.1".to_owned()),
+                ("PORT".to_owned(), "9443".to_owned()),
+            ]),
+            &flags_contract(),
+        )
+        .expect("valid runtime args");
+
+        assert_eq!(
+            bind_address(&runtime.merged_env).expect("valid bind"),
+            "127.0.0.1:9443".parse().expect("socket address")
+        );
     }
 
     #[test]
