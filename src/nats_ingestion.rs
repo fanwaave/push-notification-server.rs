@@ -536,6 +536,11 @@ fn dead_letter_for_payload(
     }
 }
 
+// HOT-PATH (imperative by design): this wraps every JetStream message dispatch;
+// `tokio::select!` polls the pinned future through `&mut` and `Interval::tick`
+// is a stateful timer, so a value-per-tick rewrite is impossible without
+// re-pinning and re-arming per poll; the mutation is confined to the two locals
+// of this function, and callers receive the wrapped future's output value.
 async fn run_with_ack_progress<F, T>(
     message: &jetstream::Message,
     interval: Duration,
@@ -584,11 +589,12 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
-    let mut difference = 0_u8;
-    for (left, right) in left.iter().zip(right) {
-        difference |= left ^ right;
-    }
-    difference == 0
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn non_empty_env(name: &str) -> Option<String> {

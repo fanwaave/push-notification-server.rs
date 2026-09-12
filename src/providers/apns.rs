@@ -186,6 +186,11 @@ impl ApnsProvider {
         }
     }
 
+    // HOT-PATH (imperative by design): the provider-token cache is consulted on
+    // every APNs send and refreshed in place under the mutex so concurrent senders
+    // share one ES256 signing instead of each signing a new JWT; the mutation is
+    // confined to the guarded `Option` slot in this method, and callers receive an
+    // owned, immutable `String` token.
     async fn token(&self) -> Result<String, ProviderError> {
         let mut guard = self.provider_token.lock().await;
         if let Some(cached) = guard.as_ref() {
@@ -229,7 +234,7 @@ impl ApnsProvider {
 
         let request = build_request(job, unix_now()?)?;
         let provider_token = self.token().await?;
-        let mut builder = self
+        let builder = self
             .client
             .post(self.message_url(device_token)?)
             .bearer_auth(provider_token)
@@ -237,12 +242,15 @@ impl ApnsProvider {
             .header("apns-push-type", request.push_type)
             .header("apns-priority", request.priority)
             .header("apns-expiration", request.expiration.to_string());
-        if let Some(collapse_id) = request.collapse_id.as_deref() {
-            builder = builder.header("apns-collapse-id", collapse_id);
-        }
-        if canonical_uuid(&job.idempotency_key) {
-            builder = builder.header("apns-id", &job.idempotency_key);
-        }
+        let builder = match request.collapse_id.as_deref() {
+            Some(collapse_id) => builder.header("apns-collapse-id", collapse_id),
+            None => builder,
+        };
+        let builder = if canonical_uuid(&job.idempotency_key) {
+            builder.header("apns-id", &job.idempotency_key)
+        } else {
+            builder
+        };
 
         let response = builder
             .json(&request.payload)
@@ -277,9 +285,10 @@ impl ApnsProvider {
         })?;
 
         if status.is_success() {
-            let mut outcome = PushOutcome::accepted(job);
-            outcome.provider_code = apns_id;
-            return Ok(outcome);
+            return Ok(PushOutcome {
+                provider_code: apns_id,
+                ..PushOutcome::accepted(job)
+            });
         }
 
         let error = serde_json::from_str::<ApnsErrorResponse>(&body).ok();
@@ -413,34 +422,36 @@ fn build_request(job: &PushJob, now: u64) -> Result<ApnsRequest, ProviderError> 
         ));
     }
 
-    let mut aps = Map::new();
-    if visible {
-        let mut alert = Map::new();
-        if let Some(title) = &job.notification.title {
-            alert.insert("title".to_owned(), Value::String(title.clone()));
-        }
-        if let Some(body) = &job.notification.body {
-            alert.insert("body".to_owned(), Value::String(body.clone()));
-        }
-        aps.insert("alert".to_owned(), Value::Object(alert));
+    let presentation = if visible {
+        ("alert".to_owned(), Value::Object(alert_dictionary(job)))
     } else {
-        aps.insert("content-available".to_owned(), Value::from(1));
-    }
-    if job.notification.image_url.is_some() {
-        aps.insert("mutable-content".to_owned(), Value::from(1));
-    }
+        ("content-available".to_owned(), Value::from(1))
+    };
+    let aps: Map<String, Value> = [
+        Some(presentation),
+        job.notification
+            .image_url
+            .is_some()
+            .then(|| ("mutable-content".to_owned(), Value::from(1))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    let mut payload = job
-        .notification
-        .data
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect::<Map<String, Value>>();
-    if let Some(image_url) = &job.notification.image_url {
-        payload.insert("image_url".to_owned(), Value::String(image_url.clone()));
-    }
-    payload.insert("aps".to_owned(), Value::Object(aps));
-    let payload = Value::Object(payload);
+    let payload = Value::Object(
+        job.notification
+            .data
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .chain(
+                job.notification
+                    .image_url
+                    .as_ref()
+                    .map(|image_url| ("image_url".to_owned(), Value::String(image_url.clone()))),
+            )
+            .chain([("aps".to_owned(), Value::Object(aps))])
+            .collect::<Map<String, Value>>(),
+    );
     let payload_size = serde_json::to_vec(&payload)
         .map_err(|_| invalid_payload("APNs payload could not be serialized", "serialization"))?
         .len();
@@ -466,6 +477,23 @@ fn build_request(job: &PushJob, now: u64) -> Result<ApnsRequest, ProviderError> 
             .unwrap_or(0),
         collapse_id: job.options.collapse_key.clone(),
     })
+}
+
+/// The `aps.alert` dictionary: title and body members present only when set.
+fn alert_dictionary(job: &PushJob) -> Map<String, Value> {
+    [
+        job.notification
+            .title
+            .as_ref()
+            .map(|title| ("title".to_owned(), Value::String(title.clone()))),
+        job.notification
+            .body
+            .as_ref()
+            .map(|body| ("body".to_owned(), Value::String(body.clone()))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn has_visible_alert(job: &PushJob) -> bool {

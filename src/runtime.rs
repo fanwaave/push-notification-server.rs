@@ -41,28 +41,28 @@ pub enum RuntimeConfigError {
 }
 
 pub fn provider_registry_from_env() -> Result<ProviderRegistry, RuntimeConfigError> {
-    let mut registry = ProviderRegistry::new();
-
     let expo = ExpoProvider::new(
         ExpoConfig::new(non_empty_env("EXPO_ACCESS_TOKEN"))
             .map_err(|error| invalid_provider("expo", error))?,
     )
     .map_err(|error| invalid_provider("expo", error))?;
-    registry = registry.with_provider(ProviderSlot::Expo, Arc::new(expo))?;
+    let registry = ProviderRegistry::new().with_provider(ProviderSlot::Expo, Arc::new(expo))?;
+    let registry = configure_fcm(registry)?;
+    let registry = configure_apns(registry)?;
+    configure_web_push(registry)
+}
 
-    if let Some(service_account) = non_empty_env("FCM_SERVICE_ACCOUNT_JSON") {
-        let config = FcmConfig::from_service_account_json(
-            &service_account,
-            non_empty_env("FCM_PROJECT_ID").as_deref(),
-        )
-        .map_err(|error| invalid_provider("fcm", error))?;
-        let provider = FcmProvider::new(config).map_err(|error| invalid_provider("fcm", error))?;
-        registry = registry.with_provider(ProviderSlot::Fcm, Arc::new(provider))?;
-    }
-
-    registry = configure_apns(registry)?;
-    registry = configure_web_push(registry)?;
-    Ok(registry)
+fn configure_fcm(registry: ProviderRegistry) -> Result<ProviderRegistry, RuntimeConfigError> {
+    let Some(service_account) = non_empty_env("FCM_SERVICE_ACCOUNT_JSON") else {
+        return Ok(registry);
+    };
+    let config = FcmConfig::from_service_account_json(
+        &service_account,
+        non_empty_env("FCM_PROJECT_ID").as_deref(),
+    )
+    .map_err(|error| invalid_provider("fcm", error))?;
+    let provider = FcmProvider::new(config).map_err(|error| invalid_provider("fcm", error))?;
+    Ok(registry.with_provider(ProviderSlot::Fcm, Arc::new(provider))?)
 }
 
 pub fn request_authenticator_from_env() -> Result<Arc<dyn RequestAuthenticator>, RuntimeConfigError>
@@ -135,16 +135,19 @@ fn configure_web_push(registry: ProviderRegistry) -> Result<ProviderRegistry, Ru
         )
         .map_err(|error| invalid_provider("web_push", error))?,
     };
-    let mut config = WebPushConfig::new(private_key, subject, policy)
+    let config = WebPushConfig::new(private_key, subject, policy)
         .map_err(|error| invalid_provider("web_push", error))?;
-    if let Some(ttl) = non_empty_env("WEBPUSH_TTL_SECONDS") {
-        let ttl = ttl
-            .parse::<u32>()
-            .map_err(|_| RuntimeConfigError::InvalidWebPushTtl)?;
-        config = config
-            .with_default_ttl(ttl)
-            .map_err(|error| invalid_provider("web_push", error))?;
-    }
+    let config = match non_empty_env("WEBPUSH_TTL_SECONDS") {
+        Some(ttl) => {
+            let ttl = ttl
+                .parse::<u32>()
+                .map_err(|_| RuntimeConfigError::InvalidWebPushTtl)?;
+            config
+                .with_default_ttl(ttl)
+                .map_err(|error| invalid_provider("web_push", error))?
+        }
+        None => config,
+    };
     let provider =
         WebPushProvider::new(config).map_err(|error| invalid_provider("web_push", error))?;
     Ok(registry.with_provider(ProviderSlot::WebPush, Arc::new(provider))?)

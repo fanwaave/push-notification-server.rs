@@ -86,13 +86,18 @@ impl WebPushHostPolicy {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut normalized = Vec::new();
-        for host in hosts {
-            let host = normalize_allowed_host(host.as_ref())?;
-            if !normalized.contains(&host) {
-                normalized.push(host);
-            }
-        }
+        // First occurrence wins and order is preserved; the list is config-sized.
+        let normalized = hosts.into_iter().try_fold(
+            Vec::new(),
+            |seen: Vec<String>, host| -> Result<Vec<String>, WebPushConfigError> {
+                let host = normalize_allowed_host(host.as_ref())?;
+                Ok(if seen.contains(&host) {
+                    seen
+                } else {
+                    seen.into_iter().chain(std::iter::once(host)).collect()
+                })
+            },
+        )?;
         if normalized.is_empty() {
             return Err(WebPushConfigError::InvalidAllowedHost);
         }
@@ -272,7 +277,7 @@ impl WebPushProvider {
             .options
             .ttl_seconds
             .unwrap_or(self.config.default_ttl_seconds);
-        let mut request = self
+        let request = self
             .client
             .post(endpoint)
             .header("Authorization", authorization)
@@ -286,9 +291,10 @@ impl WebPushProvider {
                     PushPriority::High => "high",
                 },
             );
-        if let Some(collapse_key) = &job.options.collapse_key {
-            request = request.header("Topic", topic_for_collapse_key(collapse_key));
-        }
+        let request = match &job.options.collapse_key {
+            Some(collapse_key) => request.header("Topic", topic_for_collapse_key(collapse_key)),
+            None => request,
+        };
 
         let response = request
             .body(encrypted_payload)
@@ -540,28 +546,26 @@ fn ipv6_is_blocked(address: Ipv6Addr) -> bool {
 }
 
 fn build_payload(job: &PushJob) -> Result<Vec<u8>, ProviderError> {
-    let mut document = Map::new();
-    if let Some(title) = &job.notification.title {
-        document.insert("title".to_owned(), Value::String(title.clone()));
-    }
-    if let Some(body) = &job.notification.body {
-        document.insert("body".to_owned(), Value::String(body.clone()));
-    }
-    if let Some(image_url) = &job.notification.image_url {
-        document.insert("image_url".to_owned(), Value::String(image_url.clone()));
-    }
-    if !job.notification.data.is_empty() {
-        document.insert(
-            "data".to_owned(),
-            Value::Object(
-                job.notification
-                    .data
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            ),
-        );
-    }
+    let document: Map<String, Value> = [
+        string_entry("title", job.notification.title.as_deref()),
+        string_entry("body", job.notification.body.as_deref()),
+        string_entry("image_url", job.notification.image_url.as_deref()),
+        (!job.notification.data.is_empty()).then(|| {
+            (
+                "data".to_owned(),
+                Value::Object(
+                    job.notification
+                        .data
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let payload = serde_json::to_vec(&Value::Object(document))
         .map_err(|_| ProviderError::internal("Web Push payload could not be serialized"))?;
     if payload.len() > MAX_PLAINTEXT_PAYLOAD_BYTES {
@@ -571,6 +575,11 @@ fn build_payload(job: &PushJob) -> Result<Vec<u8>, ProviderError> {
         ));
     }
     Ok(payload)
+}
+
+/// One JSON string member, present only when the value is.
+fn string_entry(key: &str, value: Option<&str>) -> Option<(String, Value)> {
+    value.map(|value| (key.to_owned(), Value::String(value.to_owned())))
 }
 
 fn topic_for_collapse_key(collapse_key: &str) -> String {

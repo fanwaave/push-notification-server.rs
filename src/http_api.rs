@@ -8,6 +8,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -96,11 +97,12 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
-    let mut difference = 0_u8;
-    for (left, right) in left.iter().zip(right) {
-        difference |= left ^ right;
-    }
-    difference == 0
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 #[derive(Clone)]
@@ -242,10 +244,10 @@ async fn submit_batch(
         );
     }
 
-    let mut outcomes = Vec::with_capacity(request.jobs.len());
-    for job in &request.jobs {
-        outcomes.push(dispatch_job(&state.registry, job).await);
-    }
+    let outcomes = stream::iter(&request.jobs)
+        .then(|job| dispatch_job(&state.registry, job))
+        .collect::<Vec<_>>()
+        .await;
     let accepted = outcomes
         .iter()
         .filter(|outcome| outcome.class == OutcomeClass::Accepted)

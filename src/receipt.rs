@@ -23,17 +23,20 @@ pub struct DeliveryReceiptKey(String);
 impl DeliveryReceiptKey {
     pub fn for_job(job: &PushJob) -> Self {
         let target = job.target.fingerprint();
-        let mut hasher = Sha256::new();
-        hasher.update(b"fanwaave-delivery-receipt-v1\0");
-        hash_part(&mut hasher, &job.tenant_id);
-        hash_part(&mut hasher, &job.application_id);
-        hash_part(&mut hasher, &job.idempotency_key);
-        hash_part(&mut hasher, job.provider.as_str());
-        hash_part(&mut hasher, target.as_str());
-        Self(format!(
-            "{RECEIPT_KEY_PREFIX}{}",
-            hex::encode(hasher.finalize())
-        ))
+        let digest = [
+            job.tenant_id.as_str(),
+            job.application_id.as_str(),
+            job.idempotency_key.as_str(),
+            job.provider.as_str(),
+            target.as_str(),
+        ]
+        .into_iter()
+        .fold(
+            Sha256::new().chain_update(b"fanwaave-delivery-receipt-v1\0"),
+            hash_part,
+        )
+        .finalize();
+        Self(format!("{RECEIPT_KEY_PREFIX}{}", hex::encode(digest)))
     }
 
     pub fn as_str(&self) -> &str {
@@ -47,9 +50,11 @@ impl std::fmt::Display for DeliveryReceiptKey {
     }
 }
 
-fn hash_part(hasher: &mut Sha256, value: &str) {
-    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
-    hasher.update(value.as_bytes());
+/// Absorb one length-prefixed part, returning the advanced hasher.
+fn hash_part(hasher: Sha256, value: &str) -> Sha256 {
+    hasher
+        .chain_update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes())
+        .chain_update(value.as_bytes())
 }
 
 /// Exhaustive terminal states promised to producers.
