@@ -18,7 +18,7 @@ flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-e
 futures-util = "0.3"
 hex = "0.4"
 httpdate = "1"
-jsonwebtoken = "11"
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
