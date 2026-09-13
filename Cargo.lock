@@ -1162,6 +1162,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oresoftware-next-loggers"
+version = "0.1.0"
+source = "git+https://github.com/ores-otel/ores.otel.log.git?rev=a5ec8812df692ccc3bdcaaf89d984c44714970d5#a5ec8812df692ccc3bdcaaf89d984c44714970d5"
+dependencies = [
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1308,6 +1318,7 @@ dependencies = [
  "hex",
  "httpdate",
  "jsonwebtoken",
+ "oresoftware-next-loggers",
  "p256",
  "rand_core 0.6.4",
  "reqwest",
@@ -1974,9 +1985,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.55"
+version = "0.3.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
+checksum = "3e1d5e639ff6bab73cb6885cc7e7b1de96c3f32c68ec55f3952614bec1092244"
 dependencies = [
  "deranged",
  "num-conv",

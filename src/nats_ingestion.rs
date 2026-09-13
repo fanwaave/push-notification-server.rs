@@ -5,7 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_nats::jetstream;
 use futures_util::StreamExt;
+use next_loggers::{Logger, Options};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
@@ -168,11 +170,25 @@ pub async fn run_nats_consumer(
     config: NatsConfig,
     registry: ProviderRegistry,
 ) -> Result<(), NatsRuntimeError> {
+    const ROUTINE_ID: &str = "ores-routine-v-15OEVsxOgY7QVzRqmKH";
+    // Lifecycle records carry static trace ids plus server-derived reason
+    // codes, outcome classes, and delivery attempts only: never the NATS URL,
+    // envelope secrets, publisher-supplied job fields, payloads, or target
+    // capabilities.
+    let log = Logger::new(Options {
+        app_name: "push-notification-server".to_owned(),
+        ..Options::default()
+    });
     let client = async_nats::connect(config.url.clone()).await?;
     let context = jetstream::new(client);
     ensure_streams(&context, &config).await?;
     let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
     let config = Arc::new(config);
+    let _ = log
+        .info(vec![json!("JetStream push consumer started")])
+        .add_trace("ores-trace-aix6kvbn63fMhsbWwWUDA", false)
+        .add_routine_id(ROUTINE_ID)
+        .send();
 
     loop {
         let consumer = build_consumer(&context, &config).await?;
@@ -182,6 +198,13 @@ pub async fn run_nats_consumer(
                 Ok(message) => message,
                 Err(error) => {
                     tracing::error!(%error, "JetStream message fetch failed; recreating consumer stream");
+                    let _ = log
+                        .error(vec![json!(
+                            "JetStream message fetch failed; recreating consumer stream"
+                        )])
+                        .add_trace("ores-trace-M5cANNBesc4lcfTbvUDz3", false)
+                        .add_routine_id(ROUTINE_ID)
+                        .send();
                     break;
                 }
             };
@@ -189,10 +212,18 @@ pub async fn run_nats_consumer(
             let context = context.clone();
             let config = config.clone();
             let registry = registry.clone();
+            let log = log.clone();
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(error) = handle_message(&context, &config, &registry, message).await {
+                if let Err(error) =
+                    handle_message(&context, &config, &registry, &log, message).await
+                {
                     tracing::error!(%error, "JetStream push message handling failed");
+                    let _ = log
+                        .error(vec![json!("JetStream push message handling failed")])
+                        .add_trace("ores-trace-zN91ym9K2l54kQNhaQUZv", false)
+                        .add_routine_id(ROUTINE_ID)
+                        .send();
                 }
             });
         }
@@ -258,8 +289,10 @@ async fn handle_message(
     context: &jetstream::Context,
     config: &NatsConfig,
     registry: &ProviderRegistry,
+    log: &Logger,
     message: jetstream::Message,
 ) -> Result<(), NatsRuntimeError> {
+    const ROUTINE_ID: &str = "ores-routine-IKRq4-jDbFuLsI5REzDdK";
     let payload = message.payload.as_ref();
     let delivery_attempt = message
         .info()
@@ -278,6 +311,14 @@ async fn handle_message(
         );
         publish_json(context, &config.dead_subject, &event).await?;
         message.ack_with(jetstream::AckKind::Term).await?;
+        let _ = log
+            .warn(vec![
+                json!("JetStream push job dead-lettered"),
+                json!({ "reasonCode": "payload_too_large", "deliveryAttempt": delivery_attempt }),
+            ])
+            .add_trace("ores-trace-j1JFVR8DNchSNKFBuB2gj", false)
+            .add_routine_id(ROUTINE_ID)
+            .send();
         return Ok(());
     }
 
@@ -294,6 +335,17 @@ async fn handle_message(
             );
             publish_json(context, &config.dead_subject, &event).await?;
             message.ack_with(jetstream::AckKind::Term).await?;
+            let _ = log
+                .warn(vec![
+                    json!("JetStream push job dead-lettered"),
+                    json!({
+                        "reasonCode": "invalid_envelope_json",
+                        "deliveryAttempt": delivery_attempt,
+                    }),
+                ])
+                .add_trace("ores-trace-txHkEgdCL57aywv0yM5Ks", false)
+                .add_routine_id(ROUTINE_ID)
+                .send();
             return Ok(());
         }
     };
@@ -309,6 +361,18 @@ async fn handle_message(
         );
         publish_json(context, &config.dead_subject, &event).await?;
         message.ack_with(jetstream::AckKind::Term).await?;
+        // Envelope fields are unauthenticated at this point, so none are logged.
+        let _ = log
+            .warn(vec![
+                json!("JetStream push job dead-lettered"),
+                json!({
+                    "reasonCode": "unsupported_envelope_schema",
+                    "deliveryAttempt": delivery_attempt,
+                }),
+            ])
+            .add_trace("ores-trace-BLr6C_B70EnCoBFckgpe0", false)
+            .add_routine_id(ROUTINE_ID)
+            .send();
         return Ok(());
     }
 
@@ -323,12 +387,25 @@ async fn handle_message(
         );
         publish_json(context, &config.dead_subject, &event).await?;
         message.ack_with(jetstream::AckKind::Term).await?;
+        // Auth decision outcome only: the rejected envelope's fields are not logged.
+        let _ = log
+            .warn(vec![
+                json!("JetStream push job dead-lettered"),
+                json!({
+                    "reasonCode": "envelope_authentication_failed",
+                    "deliveryAttempt": delivery_attempt,
+                }),
+            ])
+            .add_trace("ores-trace-dl2JzzV81YnhJGJn-f3YX", false)
+            .add_routine_id(ROUTINE_ID)
+            .send();
         return Ok(());
     }
 
     let progress_every = (config.ack_wait / 3).max(Duration::from_secs(5));
     let outcome = run_with_ack_progress(
         &message,
+        log,
         progress_every,
         process_job(registry, &envelope.job),
     )
@@ -342,6 +419,17 @@ async fn handle_message(
     };
 
     if let Err(error) = publish_json(context, &config.result_subject, &result).await {
+        let _ = log
+            .error(vec![
+                json!("JetStream push result publication failed"),
+                json!({
+                    "outcomeClass": outcome.class,
+                    "deliveryAttempt": delivery_attempt,
+                }),
+            ])
+            .add_trace("ores-trace-yf5T9HruNjVqQrN6mN57L", false)
+            .add_routine_id(ROUTINE_ID)
+            .send();
         match disposition_for_result_publish_failure(
             outcome.class,
             delivery_attempt,
@@ -368,6 +456,19 @@ async fn handle_message(
                         %dead_error,
                         "JetStream result and dead-letter publication both failed after terminal provider outcome; terminating source message to prevent duplicate irreversible delivery"
                     );
+                    let _ = log
+                        .error(vec![
+                            json!(
+                                "JetStream result and dead-letter publication both failed; terminating source message"
+                            ),
+                            json!({
+                                "outcomeClass": outcome.class,
+                                "deliveryAttempt": delivery_attempt,
+                            }),
+                        ])
+                        .add_trace("ores-trace-vf656bywUagEuCrV3kDRS", false)
+                        .add_routine_id(ROUTINE_ID)
+                        .send();
                 }
                 message.ack_with(jetstream::AckKind::Term).await?;
             }
@@ -375,17 +476,43 @@ async fn handle_message(
         return Err(error);
     }
 
+    let outcome_class = outcome.class;
     match disposition_for_outcome(
-        outcome.class,
+        outcome_class,
         delivery_attempt,
         config.max_deliver,
         config.nak_delay,
     ) {
-        NatsDisposition::Ack => message.ack().await?,
+        NatsDisposition::Ack => {
+            message.ack().await?;
+            // Hot path: debug level only.
+            let _ = log
+                .debug(vec![
+                    json!("JetStream push job settled"),
+                    json!({
+                        "outcomeClass": outcome_class,
+                        "deliveryAttempt": delivery_attempt,
+                    }),
+                ])
+                .add_trace("ores-trace-2wnVTavf71Mk5VTTW51Lo", false)
+                .add_routine_id(ROUTINE_ID)
+                .send();
+        }
         NatsDisposition::Nak(delay) => {
             message
                 .ack_with(jetstream::AckKind::Nak(Some(delay)))
-                .await?
+                .await?;
+            let _ = log
+                .info(vec![
+                    json!("JetStream push job scheduled for redelivery"),
+                    json!({
+                        "outcomeClass": outcome_class,
+                        "deliveryAttempt": delivery_attempt,
+                    }),
+                ])
+                .add_trace("ores-trace-CcPZgLlvK0UK_wgUb-PuK", false)
+                .add_routine_id(ROUTINE_ID)
+                .send();
         }
         NatsDisposition::DeadLetter => {
             let event = dead_letter_for_payload(
@@ -398,6 +525,17 @@ async fn handle_message(
             );
             publish_json(context, &config.dead_subject, &event).await?;
             message.ack_with(jetstream::AckKind::Term).await?;
+            let _ = log
+                .error(vec![
+                    json!("JetStream push job dead-lettered after exhausting its retry budget"),
+                    json!({
+                        "outcomeClass": outcome_class,
+                        "deliveryAttempt": delivery_attempt,
+                    }),
+                ])
+                .add_trace("ores-trace-w9G6DXTiJVjlSwoxH-hPz", false)
+                .add_routine_id(ROUTINE_ID)
+                .send();
         }
     }
     Ok(())
@@ -543,12 +681,14 @@ fn dead_letter_for_payload(
 // of this function, and callers receive the wrapped future's output value.
 async fn run_with_ack_progress<F, T>(
     message: &jetstream::Message,
+    log: &Logger,
     interval: Duration,
     future: F,
 ) -> T
 where
     F: std::future::Future<Output = T>,
 {
+    const ROUTINE_ID: &str = "ores-routine-bWijhp-fB955z6Wvb2iqI";
     let mut future = std::pin::pin!(future);
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -560,6 +700,11 @@ where
             _ = ticker.tick() => {
                 if let Err(error) = message.ack_with(jetstream::AckKind::Progress).await {
                     tracing::warn!(%error, "JetStream ack-progress heartbeat failed");
+                    let _ = log
+                        .warn(vec![json!("JetStream ack-progress heartbeat failed")])
+                        .add_trace("ores-trace-RVlmf6niMMFf4btf4ejL8", false)
+                        .add_routine_id(ROUTINE_ID)
+                        .send();
                 }
             }
         }

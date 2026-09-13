@@ -19,6 +19,8 @@ futures-util = "0.3"
 hex = "0.4"
 httpdate = "1"
 jsonwebtoken = "11"
+# ores-otel next-loggers Rust SDK, pinned to one reviewed immutable commit.
+next-loggers = { package = "oresoftware-next-loggers", git = "https://github.com/ores-otel/ores.otel.log.git", rev = "a5ec8812df692ccc3bdcaaf89d984c44714970d5" }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
