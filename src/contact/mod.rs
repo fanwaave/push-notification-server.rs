@@ -12,7 +12,6 @@ pub mod runtime;
 pub mod sendgrid;
 pub mod twilio;
 pub mod validation;
-pub mod zed;
 
 pub use contracts::{
     ContactContent, ContactJob, ContactOutcome, ContactOutcomeClass, ContactProviderKind,
@@ -30,8 +29,4 @@ pub use twilio::{
 };
 pub use validation::{
     ContactValidationError, valid_e164, valid_email_address, validate_contact_job,
-};
-pub use zed::{
-    ZedDigestItem, ZedDigestItemKind, ZedEmailEvent, ZedEmailJob, ZedEmailRecipient,
-    ZedEmailRenderError, ZedPackageInterest, ZedSecuritySeverity, render_zed_email_job,
 };
