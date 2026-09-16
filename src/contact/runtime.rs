@@ -4,11 +4,15 @@ use std::sync::Arc;
 use thiserror::Error;
 use url::Url;
 
+use super::contracts::ContactProviderKind;
 use super::dispatch::ContactProviderRegistry;
 use super::sendgrid::{SendGridConfig, SendGridConfigError, SendGridProvider, SendGridRegion};
 use super::twilio::{
     TwilioConfig, TwilioConfigError, TwilioCredentials, TwilioProvider, TwilioSender,
 };
+
+const DEFAULT_EMAIL_RATE_PER_MIN: u32 = 60;
+const DEFAULT_SMS_RATE_PER_MIN: u32 = 30;
 
 #[derive(Debug, Error)]
 pub enum ContactRuntimeConfigError {
@@ -35,6 +39,9 @@ pub enum ContactRuntimeConfigError {
 
     #[error("TWILIO_VALIDITY_PERIOD_SECONDS must be a positive integer")]
     InvalidTwilioValidityPeriod,
+
+    #[error("{0} must be a positive integer")]
+    InvalidRateLimit(&'static str),
 
     #[error(transparent)]
     SendGrid(#[from] SendGridConfigError),
@@ -69,7 +76,10 @@ fn configure_sendgrid(
     )?
     .with_sandbox_mode(environment_flag("SENDGRID_SANDBOX_MODE"));
     let provider = SendGridProvider::new(config)?;
-    Ok(registry.with_provider(Arc::new(provider)))
+    let rate = positive_u32_env("EMAIL_RATE_PER_MIN", DEFAULT_EMAIL_RATE_PER_MIN)?;
+    Ok(registry
+        .with_provider(Arc::new(provider))
+        .with_rate_limit(ContactProviderKind::Sendgrid, rate))
 }
 
 fn configure_twilio(
@@ -124,7 +134,10 @@ fn configure_twilio(
         None => config,
     };
     let provider = TwilioProvider::new(config)?;
-    Ok(registry.with_provider(Arc::new(provider)))
+    let rate = positive_u32_env("SMS_RATE_PER_MIN", DEFAULT_SMS_RATE_PER_MIN)?;
+    Ok(registry
+        .with_provider(Arc::new(provider))
+        .with_rate_limit(ContactProviderKind::Twilio, rate))
 }
 
 fn parse_sendgrid_region(value: Option<&str>) -> Result<SendGridRegion, ContactRuntimeConfigError> {
@@ -199,6 +212,20 @@ fn validate_provider_credential(
         return Err(ContactRuntimeConfigError::InvalidProviderCredential(name));
     }
     Ok(value)
+}
+
+fn positive_u32_env(
+    name: &'static str,
+    default: u32,
+) -> Result<u32, ContactRuntimeConfigError> {
+    match non_empty_env(name) {
+        None => Ok(default),
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(ContactRuntimeConfigError::InvalidRateLimit(name)),
+    }
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -276,5 +303,11 @@ mod tests {
             sender,
             Err(ContactRuntimeConfigError::AmbiguousTwilioSender)
         ));
+    }
+
+    #[test]
+    fn rate_env_defaults_match_existing_contact_service() {
+        assert_eq!(DEFAULT_EMAIL_RATE_PER_MIN, 60);
+        assert_eq!(DEFAULT_SMS_RATE_PER_MIN, 30);
     }
 }
