@@ -3,14 +3,17 @@ use std::sync::Arc;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use super::contracts::{ContactJob, ContactOutcome, ContactProviderKind};
+use super::contracts::{ContactJob, ContactOutcome, ContactOutcomeClass, ContactProviderKind};
 use super::provider::{ContactProvider, ContactProviderError};
+use super::rate_limit::ContactRateLimiter;
 use crate::provider::ProviderReadiness;
 
 #[derive(Clone, Default)]
 pub struct ContactProviderRegistry {
     sendgrid: Option<Arc<dyn ContactProvider>>,
     twilio: Option<Arc<dyn ContactProvider>>,
+    sendgrid_limiter: Option<Arc<ContactRateLimiter>>,
+    twilio_limiter: Option<Arc<ContactRateLimiter>>,
 }
 
 impl ContactProviderRegistry {
@@ -26,12 +29,21 @@ impl ContactProviderRegistry {
         self
     }
 
-    pub async fn dispatch(&self, job: &ContactJob) -> Result<ContactOutcome, ContactProviderError> {
-        let provider = match job.provider {
-            ContactProviderKind::Sendgrid => self.sendgrid.as_ref(),
-            ContactProviderKind::Twilio => self.twilio.as_ref(),
+    pub fn with_rate_limit(mut self, provider: ContactProviderKind, per_minute: u32) -> Self {
+        let limiter = Some(Arc::new(ContactRateLimiter::per_minute(per_minute)));
+        match provider {
+            ContactProviderKind::Sendgrid => self.sendgrid_limiter = limiter,
+            ContactProviderKind::Twilio => self.twilio_limiter = limiter,
         }
-        .ok_or_else(|| {
+        self
+    }
+
+    pub async fn dispatch(&self, job: &ContactJob) -> Result<ContactOutcome, ContactProviderError> {
+        let (provider, limiter) = match job.provider {
+            ContactProviderKind::Sendgrid => (self.sendgrid.as_ref(), self.sendgrid_limiter.as_ref()),
+            ContactProviderKind::Twilio => (self.twilio.as_ref(), self.twilio_limiter.as_ref()),
+        };
+        let provider = provider.ok_or_else(|| {
             ContactProviderError::not_configured(format!(
                 "{} provider is not configured",
                 job.provider.as_str()
@@ -41,6 +53,16 @@ impl ContactProviderRegistry {
             return Err(ContactProviderError::internal(
                 "contact registry returned the wrong provider kind",
             ));
+        }
+        if let Some(limiter) = limiter {
+            if let Err(retry_after) = limiter.try_acquire().await {
+                return Err(ContactProviderError::delivery(
+                    ContactOutcomeClass::Throttled,
+                    "contact delivery rate limit reached",
+                    Some(retry_after),
+                    Some("local_rate_limit".to_owned()),
+                ));
+            }
         }
         provider.send(job).await
     }
@@ -148,6 +170,25 @@ mod tests {
         let outcome = registry.dispatch(&email_job()).await.expect("outcome");
         assert_eq!(outcome.provider, ContactProviderKind::Sendgrid);
         assert_eq!(outcome.provider_code.as_deref(), Some("accepted-id"));
+    }
+
+    #[tokio::test]
+    async fn configured_rate_limit_throttles_before_provider_send() {
+        let registry = ContactProviderRegistry::new()
+            .with_provider(Arc::new(AcceptingProvider(ContactProviderKind::Sendgrid)))
+            .with_rate_limit(ContactProviderKind::Sendgrid, 1);
+        registry.dispatch(&email_job()).await.expect("first token");
+        let error = registry
+            .dispatch(&email_job())
+            .await
+            .expect_err("second token should be throttled");
+        assert!(matches!(
+            error,
+            ContactProviderError::Delivery {
+                class: ContactOutcomeClass::Throttled,
+                ..
+            }
+        ));
     }
 
     #[test]

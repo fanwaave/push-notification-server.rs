@@ -7,6 +7,7 @@
 
 pub mod api_docs;
 pub mod contact;
+pub mod contact_nats_ingestion;
 pub mod contracts;
 pub mod dispatch;
 pub mod http_api;
@@ -29,6 +30,11 @@ pub use contact::{
     TwilioConfig, TwilioConfigError, TwilioCredentials, TwilioProvider, TwilioSender,
     contact_registry_from_env, contact_router, valid_e164, valid_email_address,
     validate_contact_job,
+};
+pub use contact_nats_ingestion::{
+    ContactDeadLetterEventV1, ContactJobEnvelopeV1, ContactNatsConfig, ContactNatsConfigError,
+    ContactNatsDisposition, ContactResultEventV1, disposition_for_outcome as contact_disposition_for_outcome,
+    run_contact_nats_consumer,
 };
 pub use contracts::{
     ContractVersion, Notification, OutcomeClass, ProviderEnvironment, ProviderKind, PushJob,
