@@ -29,4 +29,5 @@ unknown-git = "deny"
 allow-git = [
   "https://github.com/flags-2-env/flags-2-env.git?rev=333c2ace93c362d274171ab0e0edf613d96a8e59",
   "https://github.com/juhaku/utoipa?rev=aecd7f75c8a8fa586e5d821cbabdb63fa27ad30a",
+  "https://github.com/ores-otel/ores.otel.log.git?rev=a5ec8812df692ccc3bdcaaf89d984c44714970d5",
 ]
