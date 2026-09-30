@@ -4,6 +4,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use url::Url;
 
+use super::contracts::ContactProviderKind;
 use super::dispatch::ContactProviderRegistry;
 use super::sendgrid::{SendGridConfig, SendGridConfigError, SendGridProvider, SendGridRegion};
 use super::twilio::{
@@ -23,6 +24,9 @@ pub enum ContactRuntimeConfigError {
 
     #[error("{0} must contain exact printable ASCII bytes without whitespace")]
     InvalidProviderCredential(&'static str),
+
+    #[error("{0} must be a positive integer")]
+    InvalidRateLimit(&'static str),
 
     #[error("configure exactly one Twilio credential mode: Auth Token or API Key")]
     AmbiguousTwilioCredentials,
@@ -46,7 +50,16 @@ pub enum ContactRuntimeConfigError {
 pub fn contact_registry_from_env() -> Result<ContactProviderRegistry, ContactRuntimeConfigError> {
     let registry = ContactProviderRegistry::new();
     let registry = configure_sendgrid(registry)?;
-    configure_twilio(registry)
+    let registry = configure_twilio(registry)?;
+    Ok(registry
+        .with_rate_limit(
+            ContactProviderKind::Sendgrid,
+            positive_u32_env("EMAIL_RATE_PER_MIN", 60)?,
+        )
+        .with_rate_limit(
+            ContactProviderKind::Twilio,
+            positive_u32_env("SMS_RATE_PER_MIN", 30)?,
+        ))
 }
 
 fn configure_sendgrid(
@@ -201,6 +214,20 @@ fn validate_provider_credential(
     Ok(value)
 }
 
+fn positive_u32_env(
+    name: &'static str,
+    default: u32,
+) -> Result<u32, ContactRuntimeConfigError> {
+    match non_empty_env(name) {
+        None => Ok(default),
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(ContactRuntimeConfigError::InvalidRateLimit(name)),
+    }
+}
+
 fn non_empty_env(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -275,6 +302,14 @@ mod tests {
         assert!(matches!(
             sender,
             Err(ContactRuntimeConfigError::AmbiguousTwilioSender)
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_rate_limits() {
+        assert!(matches!(
+            positive_u32_env("FANWAAVE_TEST_RATE_LIMIT_NOT_SET", 60),
+            Ok(60)
         ));
     }
 }

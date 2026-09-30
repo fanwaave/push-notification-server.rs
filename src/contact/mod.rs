@@ -8,6 +8,7 @@ pub mod contracts;
 pub mod dispatch;
 pub mod http;
 pub mod provider;
+pub(crate) mod rate_limit;
 pub mod runtime;
 pub mod sendgrid;
 pub mod twilio;

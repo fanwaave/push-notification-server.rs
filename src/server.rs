@@ -9,9 +9,10 @@ use flags2env::{
     env_map::{EnvBindingSpec, EnvMap, EnvValueKind, resolve_typed_bindings},
 };
 use push_notification_server::{
-    ApiState, ContactApiState, NatsConfig, application_router, canonical_json,
+    ApiState, ContactApiState, ContactNatsConfig, NatsConfig, application_router, canonical_json,
     contact_registry_from_env, openapi_document, provider_registry_from_env,
-    public_openapi_document, request_authenticator_from_env, run_nats_consumer,
+    public_openapi_document, request_authenticator_from_env, run_contact_nats_consumer,
+    run_nats_consumer,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -82,6 +83,21 @@ where
         });
     } else {
         tracing::info!("JetStream push ingestion disabled because NATS_URL is not configured");
+    }
+
+    if let Some(contact_nats_config) = ContactNatsConfig::from_env()? {
+        let contact_nats_registry = contact_registry.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                run_contact_nats_consumer(contact_nats_config, contact_nats_registry).await
+            {
+                tracing::error!(%error, "JetStream contact ingestion stopped");
+            }
+        });
+    } else {
+        tracing::info!(
+            "JetStream contact ingestion disabled; set ENABLE_NATS_CONTACT_INGESTION=true to run contact workers"
+        );
     }
 
     let app = application_router(
