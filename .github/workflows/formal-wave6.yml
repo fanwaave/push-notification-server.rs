@@ -10,11 +10,20 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - name: Validate and execute proof twice
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact workflow source HEAD
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Validate and execute proof twice, including optimized Python
         run: |
           set -euo pipefail
           python3 -m py_compile conformance/formal_wave6_model.py
           python3 -I conformance/formal_wave6_model.py >/tmp/a
           python3 -I conformance/formal_wave6_model.py >/tmp/b
-          cmp /tmp/a /tmp/b && cat /tmp/a
+          python3 -I -O conformance/formal_wave6_model.py >/tmp/optimized
+          cmp /tmp/a /tmp/b
+          cmp /tmp/a /tmp/optimized
+          cat /tmp/a
