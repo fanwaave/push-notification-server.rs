@@ -214,10 +214,7 @@ fn validate_provider_credential(
     Ok(value)
 }
 
-fn positive_u32_env(
-    name: &'static str,
-    default: u32,
-) -> Result<u32, ContactRuntimeConfigError> {
+fn positive_u32_env(name: &'static str, default: u32) -> Result<u32, ContactRuntimeConfigError> {
     match non_empty_env(name) {
         None => Ok(default),
         Some(value) => value
