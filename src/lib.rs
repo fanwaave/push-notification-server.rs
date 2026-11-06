@@ -33,8 +33,8 @@ pub use contact::{
 };
 pub use contact_nats_ingestion::{
     ContactDeadLetterEventV1, ContactJobEnvelopeV1, ContactNatsConfig, ContactNatsConfigError,
-    ContactNatsDisposition, ContactResultEventV1, disposition_for_outcome as contact_disposition_for_outcome,
-    run_contact_nats_consumer,
+    ContactNatsDisposition, ContactResultEventV1,
+    disposition_for_outcome as contact_disposition_for_outcome, run_contact_nats_consumer,
 };
 pub use contracts::{
     ContractVersion, Notification, OutcomeClass, ProviderEnvironment, ProviderKind, PushJob,
