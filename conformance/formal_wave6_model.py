@@ -12,6 +12,8 @@ from typing import NamedTuple
 MAX_ATTEMPTS = 3
 OUTCOMES = ("accepted", "retryable", "poison")
 TERMINAL = frozenset(("acked", "termed", "unresolved"))
+PHASES = frozenset(("received", "result_published", "publish_failed",
+                    "dead_published", "dlq_publish_failed", "nak", *TERMINAL))
 
 
 class ModelViolation(ValueError):
@@ -37,6 +39,21 @@ def check_state(s):
     require(type(s.attempt) is int and 1 <= s.attempt <= MAX_ATTEMPTS,
             "invalid delivery attempt")
     require(s.raw_payload_in_audit is False, "raw payload leaked to audit")
+    require(s.phase in PHASES, "unknown disposition phase")
+    if s.phase == "received":
+        require(not s.result_published and not s.dead_letter_published,
+                "a new delivery cannot inherit earlier receipts")
+    if s.phase == "result_published":
+        require(s.result_published and s.outcome != "poison",
+                "invalid result-published phase")
+    if s.phase == "dead_published":
+        require(s.dead_letter_published, "dead-letter phase lacks receipt")
+    if s.phase == "publish_failed":
+        require(not s.result_published, "failed result publication has a receipt")
+    if s.phase == "dlq_publish_failed":
+        require(not s.dead_letter_published, "failed DLQ publication has a receipt")
+    if s.phase == "nak":
+        require(s.attempt < MAX_ATTEMPTS, "NAK would exceed attempt limit")
     if s.phase == "acked":
         require(s.outcome == "accepted" and s.result_published,
                 "Ack before durable accepted result")
@@ -97,6 +114,7 @@ def check_transition(before, after):
                 "redelivery inherited previous publish receipt")
     if before.phase in TERMINAL:
         raise ModelViolation("terminal disposition must not transition")
+    require(after in successors(before), "transition is not in the declared state machine")
 
 
 def verify():
@@ -137,6 +155,10 @@ def mutation_controls():
         State("accepted", MAX_ATTEMPTS + 1, "received"),
         State("forged", 1, "received"),
         State("retryable", 3, "unresolved", True, True),
+        State("accepted", 1, "received", True),
+        State("retryable", 3, "nak"),
+        State("poison", 1, "result_published", True),
+        State("accepted", 1, "unknown"),
     )
     for bad in corrupt:
         try:
@@ -150,6 +172,8 @@ def mutation_controls():
         (State("retryable", 1, "received"), State("retryable", 1, "termed", True, True)),
         (State("retryable", 2, "nak"), State("retryable", 2, "received")),
         (State("accepted", 1, "acked", True), State("accepted", 2, "received")),
+        (State("retryable", 1, "received"), State("retryable", 1, "nak")),
+        (State("accepted", 1, "result_published", True), State("accepted", 1, "nak", True)),
     )
     for before, after in invalid_edges:
         try:
@@ -158,7 +182,7 @@ def mutation_controls():
             rejected += 1
         else:
             raise ModelViolation("mutated invalid transition was accepted")
-    require(rejected == 12, "missing negative controls")
+    require(rejected == 18, "missing negative controls")
     return rejected
 
 
