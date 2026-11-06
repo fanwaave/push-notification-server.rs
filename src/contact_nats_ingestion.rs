@@ -89,14 +89,8 @@ impl ContactNatsConfig {
             ),
             dead_subject: env_value("NATS_CONTACT_DEAD_SUBJECT", DEFAULT_CONTACT_DEAD_SUBJECT),
             consumer: env_value("NATS_CONTACT_CONSUMER", DEFAULT_CONTACT_CONSUMER),
-            ack_wait: Duration::from_secs(positive_u64(
-                "NATS_CONTACT_ACK_WAIT_SECONDS",
-                120,
-            )?),
-            nak_delay: Duration::from_secs(positive_u64(
-                "NATS_CONTACT_NAK_DELAY_SECONDS",
-                15,
-            )?),
+            ack_wait: Duration::from_secs(positive_u64("NATS_CONTACT_ACK_WAIT_SECONDS", 120)?),
+            nak_delay: Duration::from_secs(positive_u64("NATS_CONTACT_NAK_DELAY_SECONDS", 15)?),
             max_deliver: positive_i64("NATS_CONTACT_MAX_DELIVER", 8)?,
             max_payload_bytes: positive_usize(
                 "NATS_CONTACT_MAX_PAYLOAD_BYTES",
@@ -552,7 +546,10 @@ async fn publish_json<T: Serialize>(
     event: &T,
 ) -> Result<(), ContactNatsRuntimeError> {
     let payload = serde_json::to_vec(event)?;
-    context.publish(subject.to_owned(), payload.into()).await?.await?;
+    context
+        .publish(subject.to_owned(), payload.into())
+        .await?
+        .await?;
     Ok(())
 }
 

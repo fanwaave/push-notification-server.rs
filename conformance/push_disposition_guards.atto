@@ -1,0 +1,22 @@
+// Pure AttoLang admission predicates; no compiler-backed execution yet.
+// At-least-once NATS delivery must not be confused with exactly-once provider effects.
+define module push_disposition_guards as
+  pub fnc may_ack(bool result_published, bool accepted): bool {
+    return result_published && accepted;
+  }
+
+  pub fnc may_term(bool redacted_dead_letter_published): bool {
+    return redacted_dead_letter_published;
+  }
+
+  pub fnc may_retry(int attempt, int maximum, bool retryable): bool {
+    return retryable && attempt > 0 && maximum > 0 && attempt < maximum;
+  }
+
+  pub fnc self_check(): bool {
+    return may_ack(true,true) && !may_ack(false,true) &&
+      !may_ack(true,false) &&
+      may_term(true) && !may_term(false) &&
+      may_retry(1,3,true) && !may_retry(3,3,true);
+  }
+end

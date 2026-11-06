@@ -40,7 +40,9 @@ impl ContactProviderRegistry {
 
     pub async fn dispatch(&self, job: &ContactJob) -> Result<ContactOutcome, ContactProviderError> {
         let (provider, limiter) = match job.provider {
-            ContactProviderKind::Sendgrid => (self.sendgrid.as_ref(), self.sendgrid_limiter.as_ref()),
+            ContactProviderKind::Sendgrid => {
+                (self.sendgrid.as_ref(), self.sendgrid_limiter.as_ref())
+            }
             ContactProviderKind::Twilio => (self.twilio.as_ref(), self.twilio_limiter.as_ref()),
         };
         let provider = provider.ok_or_else(|| {

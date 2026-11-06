@@ -44,8 +44,7 @@ impl TokenBucket {
 
     fn try_take(&mut self) -> Result<(), Duration> {
         let now = Instant::now();
-        self.tokens = (self.tokens
-            + now.duration_since(self.last).as_secs_f64() * self.per_second)
+        self.tokens = (self.tokens + now.duration_since(self.last).as_secs_f64() * self.per_second)
             .min(self.capacity);
         self.last = now;
 
