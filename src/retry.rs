@@ -115,8 +115,19 @@ fn duration_from_millis(millis: u128) -> Duration {
 pub fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
     let value = value.trim();
 
-    if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds).min(MAX_RETRY_AFTER));
+    // A delta-seconds value can exceed u64::MAX. It is still a valid
+    // non-negative delay and must be capped, not reclassified as a date.
+    if !value.is_empty() && value.bytes().all(|digit| digit.is_ascii_digit()) {
+        let mut seconds = 0_u64;
+        for digit in value.bytes() {
+            seconds = seconds
+                .saturating_mul(10)
+                .saturating_add(u64::from(digit - b'0'));
+            if seconds >= MAX_RETRY_AFTER.as_secs() {
+                return Some(MAX_RETRY_AFTER);
+            }
+        }
+        return Some(Duration::from_secs(seconds));
     }
 
     let retry_at = httpdate::parse_http_date(value).ok()?;
@@ -147,6 +158,14 @@ mod tests {
         assert_eq!(
             parse_retry_after("999999", SystemTime::UNIX_EPOCH),
             Some(MAX_RETRY_AFTER)
+        );
+        assert_eq!(
+            parse_retry_after("184467440737095516160000000000", SystemTime::UNIX_EPOCH),
+            Some(MAX_RETRY_AFTER)
+        );
+        assert_eq!(
+            parse_retry_after("00000000000000000000000001", SystemTime::UNIX_EPOCH),
+            Some(Duration::from_secs(1))
         );
     }
 
